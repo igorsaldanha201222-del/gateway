@@ -53,8 +53,14 @@ jobs:
           # O diagnostico vai para o RESUMO do job, nao so' para o log: o log
           # exige permissao de admin no repositorio para ser baixado, e quem
           # conserta o build nem sempre a tem. O resumo e legivel pela API.
+          # "::error::" vira anotacao do check run, que a API expoe sem exigir
+          # admin no repositorio - ao contrario do log e do resumo do job. E o
+          # unico canal por onde o motivo da falha sai daqui para quem conserta.
           $notas = @()
-          function Nota($t) { $script:notas += $t; Write-Host $t }
+          function Nota($t) {
+            $script:notas += $t
+            if ($t -match "ERRO|secret|formato|caracteres") { Write-Host "::error::$t" } else { Write-Host $t }
+          }
 
           # Aceita o secret em base64 OU colado como PEM direto: quem cadastra
           # copia de um arquivo, e exigir um formato so' e pedir para falhar.
