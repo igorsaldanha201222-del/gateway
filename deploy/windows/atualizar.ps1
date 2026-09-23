@@ -76,10 +76,19 @@ function Derrubar-Servico {
 
 function Atualizar-Console {
     <#
-      O console e' ferramenta de quem opera, nao servico: se estiver aberto na
-      hora, nao se derruba a janela de ninguem - pula e pega na proxima janela.
-      Melhor esforco, sem health check e sem desfazer: se a janela nao abrir,
-      a aquisicao continua rodando do mesmo jeito.
+      O console e' ferramenta de quem opera, nao servico: melhor esforco, sem
+      health check e sem desfazer. Se a janela nao abrir, a aquisicao continua
+      rodando do mesmo jeito.
+
+      Antes esta funcao PULAVA o console quando ele estava aberto, para nao
+      derrubar a janela de ninguem. Na pratica isso o deixava para tras para
+      sempre: quem atualiza a mao abre o console justamente para conferir a
+      versao, e roda o ATUALIZAR com ele aberto. O servico subia, o console
+      ficava na versao velha, e a conclusao de quem olhava era "atualizei mil
+      vezes e nao muda".
+
+      Agora fecha, troca e reabre. Sao dois segundos de janela fechada, contra
+      um console que nunca mais avanca.
     #>
     param($Release, $Cabecalhos)
     $nomeC = "gridco-console.exe"
@@ -103,16 +112,45 @@ function Atualizar-Console {
         $local = (Get-FileHash $alvoC -Algorithm SHA256).Hash.ToLower()
         if ($esp -eq $local) { Registrar "Console ja' esta na versao publicada."; return }
 
-        if (Get-Process -Name "gridco-console" -ErrorAction SilentlyContinue) {
-            Registrar "Console esta aberto; sera atualizado na proxima janela." "AVISO"
-            return
-        }
+        # Baixa e confere ANTES de fechar a janela: se o download falhar ou o
+        # hash nao bater, ninguem perdeu o console por nada.
         $novoC = Join-Path $tc $nomeC
         Invoke-WebRequest -Uri $aC.url -Headers $Cabecalhos -OutFile $novoC
         $obt = (Get-FileHash $novoC -Algorithm SHA256).Hash.ToLower()
         if ($esp -ne $obt) { Registrar "SHA-256 do console nao confere; nao trocado." "AVISO"; return }
-        Copy-Item $novoC $alvoC -Force
+
+        $estavaAberto = [bool](Get-Process -Name "gridco-console" -ErrorAction SilentlyContinue)
+        if ($estavaAberto) {
+            Registrar "Console aberto; fechando para trocar o binario."
+            Get-Process -Name "gridco-console" -ErrorAction SilentlyContinue |
+                Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+        }
+
+        # O arquivo pode continuar travado por um instante depois do processo
+        # morrer. Tentar uma vez so' e voltar ao problema de origem.
+        $trocado = $false
+        foreach ($tentativa in 1..5) {
+            try { Copy-Item $novoC $alvoC -Force; $trocado = $true; break }
+            catch { Start-Sleep -Seconds 2 }
+        }
+        if (-not $trocado) {
+            Registrar "Console em uso; nao foi possivel trocar o binario." "AVISO"
+            return
+        }
         Registrar "Console atualizado."
+
+        if ($estavaAberto -and -not $Automatico) {
+            # So' reabre quando alguem rodou o atualizador a mao. Na tarefa
+            # diaria o console roda como SYSTEM, numa sessao sem area de
+            # trabalho: abriria um processo invisivel que ninguem fecha.
+            try {
+                Start-Process -FilePath $alvoC -WorkingDirectory $DestinoPrograma
+                Registrar "Console reaberto na versao nova."
+            } catch {
+                Registrar "Console nao reabriu sozinho: $($_.Exception.Message)" "AVISO"
+            }
+        }
     } catch {
         Registrar "Console nao atualizado: $($_.Exception.Message)" "AVISO"
     } finally {
