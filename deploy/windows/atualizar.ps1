@@ -74,6 +74,52 @@ function Derrubar-Servico {
     Start-Sleep -Seconds 2
 }
 
+function Atualizar-Console {
+    <#
+      O console e' ferramenta de quem opera, nao servico: se estiver aberto na
+      hora, nao se derruba a janela de ninguem - pula e pega na proxima janela.
+      Melhor esforco, sem health check e sem desfazer: se a janela nao abrir,
+      a aquisicao continua rodando do mesmo jeito.
+    #>
+    param($Release, $Cabecalhos)
+    $nomeC = "gridco-console.exe"
+    $alvoC = Join-Path $DestinoPrograma $nomeC
+    if (-not (Test-Path $alvoC)) {
+        Registrar "Console nao esta em $DestinoPrograma; nada a atualizar nele." "AVISO"
+        return
+    }
+
+    $aC = $Release.assets | Where-Object { $_.name -eq $nomeC }
+    $sC = $Release.assets | Where-Object { $_.name -eq "$nomeC.sha256" }
+    if (-not $aC -or -not $sC) { Registrar "Release sem $nomeC; console nao atualizado." "AVISO"; return }
+
+    $tc = Join-Path $env:TEMP ("gridco-c-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $tc | Out-Null
+    try {
+        # Compara primeiro pelo hash publicado: sem diferenca, nem baixa.
+        $arqSha = Join-Path $tc "$nomeC.sha256"
+        Invoke-WebRequest -Uri $sC.url -Headers $Cabecalhos -OutFile $arqSha
+        $esp = ((Get-Content $arqSha -Raw) -split '\s+')[0].Trim().ToLower()
+        $local = (Get-FileHash $alvoC -Algorithm SHA256).Hash.ToLower()
+        if ($esp -eq $local) { Registrar "Console ja' esta na versao publicada."; return }
+
+        if (Get-Process -Name "gridco-console" -ErrorAction SilentlyContinue) {
+            Registrar "Console esta aberto; sera atualizado na proxima janela." "AVISO"
+            return
+        }
+        $novoC = Join-Path $tc $nomeC
+        Invoke-WebRequest -Uri $aC.url -Headers $Cabecalhos -OutFile $novoC
+        $obt = (Get-FileHash $novoC -Algorithm SHA256).Hash.ToLower()
+        if ($esp -ne $obt) { Registrar "SHA-256 do console nao confere; nao trocado." "AVISO"; return }
+        Copy-Item $novoC $alvoC -Force
+        Registrar "Console atualizado."
+    } catch {
+        Registrar "Console nao atualizado: $($_.Exception.Message)" "AVISO"
+    } finally {
+        Remove-Item $tc -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Confirmar-Saude {
     <#
       Sobe o servico e observa. Nao basta o SCM dizer "Running": um binario
@@ -146,9 +192,14 @@ if ($release.prerelease -and $Canal -eq "estavel") {
     Registrar "Release $($release.tag_name) e' pre-release; canal estavel ignora." ; exit 0
 }
 
+$baixar = $cabecalhos.Clone(); $baixar["Accept"] = "application/octet-stream"
+
 $publicada = ($release.tag_name -replace '^v', '').Trim()
 if ($publicada -eq $instalada -and -not $Forcar) {
-    Registrar "Ja esta na $instalada. Nada a fazer."
+    Registrar "Servico ja' esta na $instalada."
+    # O console e' binario separado e pode estar atrasado mesmo com o servico
+    # em dia - por exemplo se estava aberto na janela anterior.
+    Atualizar-Console $release $baixar
     exit 0
 }
 
@@ -174,7 +225,6 @@ $tmp = Join-Path $env:TEMP ("gridco-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $novoExe = Join-Path $tmp $Ativo
 $novoSha = Join-Path $tmp "$Ativo.sha256"
-$baixar = $cabecalhos.Clone(); $baixar["Accept"] = "application/octet-stream"
 try {
     Invoke-WebRequest -Uri $aExe.url -Headers $baixar -OutFile $novoExe
     Invoke-WebRequest -Uri $aSha.url -Headers $baixar -OutFile $novoSha
@@ -202,6 +252,7 @@ Remove-Item $tmp -Recurse -Force
 if (Confirmar-Saude $SegundosParaConfirmar) {
     $agora = try { (& $alvo --version).Trim() } catch { "?" }
     Registrar "ATUALIZADO para $agora. Anterior em $backup."
+    Atualizar-Console $release $baixar
     exit 0
 }
 

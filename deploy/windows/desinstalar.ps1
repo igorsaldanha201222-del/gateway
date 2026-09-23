@@ -37,6 +37,12 @@ Get-Process -Name "gridco-gateway" -ErrorAction SilentlyContinue | ForEach-Objec
 }
 Start-Sleep -Seconds 1
 
+foreach ($pasta in @([Environment]::GetFolderPath("CommonPrograms"),
+                     [Environment]::GetFolderPath("CommonDesktopDirectory"))) {
+    $lnk = Join-Path $pasta "Gateway Grid Co.lnk"
+    if (Test-Path $lnk) { Remove-Item $lnk -Force; Write-Host "Atalho removido: $lnk" }
+}
+
 if (Test-Path $DestinoPrograma) {
     Remove-Item $DestinoPrograma -Recurse -Force
     Write-Host "Programa removido: $DestinoPrograma"

@@ -82,7 +82,43 @@ Start-Sleep -Seconds 2
 
 # --- 3. executavel ---------------------------------------------------------
 Copy-Item $Exe $alvoExe -Force
-Write-Host "Executavel copiado."
+Write-Host "Servico copiado."
+
+# O console tambem vai para Program Files: e' o unico lugar previsivel para o
+# atualizador encontrar e manter em dia. Rodando de uma pasta qualquer, ele
+# ficaria para tras enquanto o servico avanca.
+$exeConsole = Join-Path (Split-Path -Parent $Exe) "gridco-console.exe"
+if (-not (Test-Path $exeConsole)) { $exeConsole = Join-Path $PSScriptRoot "gridco-console.exe" }
+$alvoConsole = Join-Path $DestinoPrograma "gridco-console.exe"
+if (Test-Path $exeConsole) {
+    Copy-Item $exeConsole $alvoConsole -Force
+    Write-Host "Console copiado."
+    # Atalho no Menu Iniciar e na Area de Trabalho, para nao depender de
+    # alguem lembrar onde o zip foi extraido.
+    # CommonPrograms, nao CommonStartMenu + "Programas": em disco a pasta se
+    # chama "Programs" mesmo em Windows em portugues.
+    $shell = New-Object -ComObject WScript.Shell
+    $criados = 0
+    foreach ($pasta in @([Environment]::GetFolderPath("CommonPrograms"),
+                         [Environment]::GetFolderPath("CommonDesktopDirectory"))) {
+        if (-not $pasta -or -not (Test-Path $pasta)) { continue }
+        try {
+            $lnk = $shell.CreateShortcut((Join-Path $pasta "Gateway Grid Co.lnk"))
+            $lnk.TargetPath = $alvoConsole
+            $lnk.WorkingDirectory = $DestinoPrograma
+            $lnk.IconLocation = $alvoConsole
+            $lnk.Description = "Console do Gateway Grid Co"
+            $lnk.Save()
+            $criados++
+        } catch {
+            Write-Host "  aviso: nao criei o atalho em $pasta ($($_.Exception.Message))"
+        }
+    }
+    Write-Host "Atalhos criados: $criados (Menu Iniciar e Area de Trabalho)."
+} else {
+    Write-Host "AVISO: gridco-console.exe nao encontrado ao lado do instalador."
+    Write-Host "  O servico funciona, mas nao havera console nem atualizacao dele."
+}
 
 # --- 4. configuracao: nunca sobrescreve a do PC ---------------------------
 if (Test-Path $alvoConf) {
