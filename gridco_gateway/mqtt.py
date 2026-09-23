@@ -7,6 +7,7 @@ import os
 import socket
 import ssl
 import struct
+import sys
 import threading
 import time
 from pathlib import Path
@@ -98,6 +99,26 @@ class MQTTConnection:
             if not directory:
                 raise MQTTError("diretorio de credenciais systemd indisponivel")
             return str(Path(directory) / name)
+        if text.startswith("embutido:"):
+            # Certificado que viaja DENTRO do executavel. E' o caso da CA da
+            # Grid Co: uma so para a frota inteira, e atualizada junto com o
+            # binario - sem arquivo solto para alguem esquecer de copiar.
+            nome = text.partition(":")[2]
+            if not nome or nome != Path(nome).name:
+                raise MQTTError("nome de arquivo embutido invalido")
+            candidatos = []
+            if getattr(sys, "_MEIPASS", None):
+                candidatos.append(Path(sys._MEIPASS) / nome)
+            if getattr(sys, "frozen", False):
+                candidatos.append(Path(sys.executable).resolve().parent / nome)
+            candidatos.append(Path(__file__).resolve().parents[1] / "config" / nome)
+            candidatos.append(self.base_dir / nome)
+            for c in candidatos:
+                if c.is_file():
+                    return str(c)
+            raise MQTTError(
+                f"certificado embutido '{nome}' nao encontrado: "
+                + ", ".join(str(c) for c in candidatos))
         path = Path(text)
         return str(path if path.is_absolute() else self.base_dir / path)
 

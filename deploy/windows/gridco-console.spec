@@ -28,6 +28,10 @@ datas = collect_data_files("tzdata")
 # usina remota, se aquele PC ja' pegou o binario novo.
 datas += [(str(_gerar_build_info()), ".")]
 
+# A CA da Grid Co viaja DENTRO do executavel: uma so para a frota, atualizada
+# junto com o binario. Sem arquivo solto para alguem esquecer de copiar.
+datas += [(str(RAIZ / "config" / "ca-gridco.crt"), ".")]
+
 # O catalogo vai dentro: e' ele que alimenta o cadastro de equipamento.
 datas += [(str(RAIZ / "config" / "template_catalog.json"), ".")]
 

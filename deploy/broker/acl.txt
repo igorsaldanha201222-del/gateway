@@ -1,0 +1,30 @@
+# Quem pode escrever e ler o que.
+#
+# O gateway SO publica telemetria e SO le comando. Sem isto, uma credencial
+# vazada numa usina daria para publicar telemetria falsa de qualquer outra,
+# ou mandar comando de manobra para o disjuntor de todas.
+#
+# Regra pratica: gateway escreve em dev/read, le em dev/write. O servidor faz
+# o oposto. Nao ha usuario que faca os dois.
+
+# --------------------------------------------------------------------------
+# Gateways de usina
+# --------------------------------------------------------------------------
+# Um usuario por usina seria o ideal, com %u no topico. Comecando simples:
+# um usuario para a frota, que publica telemetria e escuta comando.
+user gateway
+topic write dev/read/UFV/#
+topic read  dev/write/UFV/#
+
+# --------------------------------------------------------------------------
+# Lado servidor: consome telemetria e envia comando
+# --------------------------------------------------------------------------
+user servidor
+topic read  dev/read/UFV/#
+topic write dev/write/UFV/#
+
+# --------------------------------------------------------------------------
+# Somente leitura, para depurar sem poder mexer em nada
+# --------------------------------------------------------------------------
+user observador
+topic read dev/read/UFV/#

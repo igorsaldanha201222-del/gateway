@@ -18,6 +18,21 @@ data/
 *.bak
 *.tmp
 
+# SEGREDOS - o repositorio e publico.
+#
+# A chave da CA assina certificado para toda a frota: vazada, qualquer um
+# emite um broker que os 200 gateways aceitam como legitimo. A chave do
+# broker e as senhas seguem a mesma regra.
+#
+# A UNICA coisa publica e config/ca-gridco.crt, que e o certificado da
+# autoridade - por definicao distribuido a todos.
+deploy/broker/certificados/
+deploy/broker/senhas*.txt
+deploy/broker/dados/
+*.key
+*.pem
+!config/ca-gridco.crt
+
 # Sistema
 Thumbs.db
 desktop.ini
