@@ -53,7 +53,11 @@ def parse_args() -> argparse.Namespace:
         help="arquivo de log rotativo; sem console, e a unica saida que sobra",
     )
     parser.add_argument("--validate", action="store_true", help="valida a configuracao e encerra")
+    # --version fica SO' o numero: o atualizar.ps1 compara esta saida com a tag
+    # do release. O carimbo completo sai em --build.
     parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--build", action="store_true",
+                        help="mostra versao, commit e data deste binario, e encerra")
     return parser.parse_args()
 
 
@@ -78,6 +82,10 @@ def main(stop_event: threading.Event | None = None) -> int:
     Manager, nao um sinal POSIX.
     """
     args = parse_args()
+    if args.build:
+        from .versao import longa
+        print(longa())
+        return 0
     if args.validate:
         return _validate(args.config)
 
