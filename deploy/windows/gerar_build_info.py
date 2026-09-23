@@ -34,8 +34,14 @@ def gerar(destino: Path | None = None) -> Path:
         commit += "+"
     tag = _git("describe", "--tags", "--exact-match") or ""
 
+    # A TAG manda na versao. O atualizar.ps1 compara a saida de --version com o
+    # nome da tag do release; se a versao ficasse presa na constante do codigo,
+    # a comparacao nunca casaria e cada PC rebaixaria o mesmo binario todas as
+    # noites, para sempre.
+    versao = (tag.lstrip("vV") or __version__) if tag else __version__
+
     dados = {
-        "versao": __version__,
+        "versao": versao,
         "commit": commit,
         "tag": tag,
         "data": datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M"),

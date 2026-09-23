@@ -53,9 +53,12 @@ def parse_args() -> argparse.Namespace:
         help="arquivo de log rotativo; sem console, e a unica saida que sobra",
     )
     parser.add_argument("--validate", action="store_true", help="valida a configuracao e encerra")
-    # --version fica SO' o numero: o atualizar.ps1 compara esta saida com a tag
-    # do release. O carimbo completo sai em --build.
-    parser.add_argument("--version", action="version", version=__version__)
+    # --version fica SO' o numero, e vem do carimbo do build (ou seja, da tag),
+    # nao da constante do codigo: o atualizar.ps1 compara esta saida com o nome
+    # da tag do release. Presa na constante, a comparacao nunca casaria e cada
+    # PC rebaixaria o mesmo binario todas as noites.
+    from .versao import info as _info
+    parser.add_argument("--version", action="version", version=_info()["versao"])
     parser.add_argument("--build", action="store_true",
                         help="mostra versao, commit e data deste binario, e encerra")
     return parser.parse_args()
