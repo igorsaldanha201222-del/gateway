@@ -29,9 +29,15 @@ data/
 deploy/broker/certificados/
 deploy/broker/senhas*.txt
 deploy/broker/dados/
+deploy/broker/pacotes/
 *.key
 *.pem
 !config/ca-gridco.crt
+
+# A chave da frota e embutida no .exe pelo build. No repositorio ela NAO entra:
+# quem a fornece e um secret do GitHub Actions. Ver .github/workflows.
+config/frota.key
+config/frota.crt
 
 # Sistema
 Thumbs.db

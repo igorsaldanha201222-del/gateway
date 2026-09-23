@@ -57,7 +57,9 @@ Get-Content $arquivoSegredo | ForEach-Object { "  $_" }
 # --- config com os caminhos desta maquina ---------------------------------
 $confOrigem = Join-Path $Base "mosquitto.conf"
 $confUso = Join-Path $dados "mosquitto-em-uso.conf"
-$texto = (Get-Content -LiteralPath $confOrigem -Raw -Encoding UTF8).Replace("__BASE__", $Base.Replace("\", "/"))
+$texto = (Get-Content -LiteralPath $confOrigem -Raw -Encoding UTF8).
+    Replace("__BASE__", $Base.Replace("\", "/")).
+    Replace("__DADOS__", $dados.Replace("\", "/"))
 # SEM BOM: Set-Content -Encoding UTF8 no PowerShell 5.1 grava BOM, e o
 # mosquitto para na primeira linha com "Unknown configuration variable".
 [IO.File]::WriteAllText($confUso, $texto, (New-Object Text.UTF8Encoding($false)))

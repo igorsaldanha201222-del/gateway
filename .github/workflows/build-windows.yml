@@ -33,6 +33,30 @@ jobs:
       - name: Dependencias de build
         run: python -m pip install --upgrade pip pyinstaller tzdata pywin32
 
+      # Certificado e chave da frota. Vao DENTRO do .exe, para que o gateway ja
+      # saia de fabrica falando com o broker - sem importar nada em 200 usinas.
+      #
+      # A chave nao esta no repositorio, que e publico: vem destes dois secrets,
+      # em base64. Cadastrar uma vez em Settings > Secrets and variables >
+      # Actions, com os nomes FROTA_CRT e FROTA_KEY.
+      #
+      # Fique claro o que isto custa: o release e publico, e quem baixar o .exe
+      # consegue extrair a chave. Ela e a mesma para a frota inteira, entao vale
+      # por todas as usinas. Foi decisao de operacao, para nao ter par para
+      # emitir e distribuir por usina. Se um dia essa conta virar, o caminho e
+      # um certificado por usina - ja ha script e ACL prontos em deploy/broker.
+      - name: Credencial da frota
+        env:
+          FROTA_CRT: ${{ secrets.FROTA_CRT }}
+          FROTA_KEY: ${{ secrets.FROTA_KEY }}
+        run: |
+          if (-not $env:FROTA_CRT -or -not $env:FROTA_KEY) {
+            throw "Secrets FROTA_CRT/FROTA_KEY ausentes. Sem eles o .exe sairia sem credencial e nenhuma usina conectaria."
+          }
+          [IO.File]::WriteAllBytes("config/frota.crt", [Convert]::FromBase64String($env:FROTA_CRT))
+          [IO.File]::WriteAllBytes("config/frota.key", [Convert]::FromBase64String($env:FROTA_KEY))
+          & openssl x509 -in config/frota.crt -noout -subject -enddate
+
       - name: Testes
         env:
           PYTHONPATH: ${{ github.workspace }}

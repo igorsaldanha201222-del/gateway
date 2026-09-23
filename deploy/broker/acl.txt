@@ -1,8 +1,9 @@
 # Quem pode escrever e ler o que.
 #
-# O gateway SO publica telemetria e SO le comando. Sem isto, uma credencial
-# vazada numa usina daria para publicar telemetria falsa de qualquer outra,
-# ou mandar comando de manobra para o disjuntor de todas.
+# Na 8883 o usuario nao vem de senha: vem do CN do certificado do cliente
+# (use_identity_as_username no mosquitto.conf). O certificado emitido para a
+# usina 'acopiara' tem CN=acopiara, entao para o broker ele E o usuario
+# acopiara. Nao ha lista de senhas para manter.
 #
 # Regra pratica: gateway escreve em dev/read, le em dev/write. O servidor faz
 # o oposto. Nao ha usuario que faca os dois.
@@ -10,14 +11,27 @@
 # --------------------------------------------------------------------------
 # Gateways de usina
 # --------------------------------------------------------------------------
-# Um usuario por usina seria o ideal, com %u no topico. Comecando simples:
-# um usuario para a frota, que publica telemetria e escuta comando.
+# Um certificado so' para a frota, CN=gateway, embutido no .exe. Todas as 200
+# usinas chegam como o mesmo usuario, entao a regra e uma so'.
 user gateway
 topic write dev/read/UFV/#
 topic read  dev/write/UFV/#
 
+# O preco de um certificado unico: nao ha separacao entre usinas. Quem extrair
+# a chave do .exe publica telemetria no nome de qualquer uma e recebe o comando
+# de todas. Para separar, o caminho e um certificado por usina (CN = slug) com
+# use_identity_as_username e estas duas linhas no lugar das de cima:
+#     pattern write dev/read/UFV/%u/#
+#     pattern read  dev/write/UFV/%u/#
+# Testado e funcionando, inclusive o isolamento. Ficou de fora por decisao de
+# operacao: um binario so' para a frota, sem par para emitir e distribuir.
+#
+# Cuidado ao conferir ACL a mao: o mosquitto ACEITA assinatura com curinga em
+# topico proibido e devolve SUBACK positivo - ele filtra na ENTREGA, nao no
+# SUBSCRIBE. "Consegui assinar" nao prova buraco nenhum.
+
 # --------------------------------------------------------------------------
-# Lado servidor: consome telemetria e envia comando
+# Lado servidor: consome telemetria de todas e envia comando
 # --------------------------------------------------------------------------
 user servidor
 topic read  dev/read/UFV/#

@@ -128,6 +128,60 @@ if (Test-Path $alvoConf) {
     Write-Host "Configuracao base instalada: $alvoConf"
 }
 
+# --- 4b. certificado da usina --------------------------------------------
+# Se o pacote traz usina.crt/usina.key, eles entram aqui e a configuracao passa
+# a apontar para eles. Ninguem importa nada a mao em 200 usinas.
+#
+# O certificado E a credencial: o CN dele vira o nome de usuario no broker
+# (use_identity_as_username), e a ACL prende cada usina ao proprio ramo do
+# topico. Nao ha senha para digitar, guardar nem trocar.
+#
+# A chave privada NAO vai dentro do .exe de proposito: o release do GitHub e
+# publico, e qualquer um baixaria e extrairia. Ela viaja neste pacote, que e
+# especifico da usina.
+$certUsina  = Join-Path $PSScriptRoot "usina.crt"
+$chaveUsina = Join-Path $PSScriptRoot "usina.key"
+if ((Test-Path $certUsina) -and (Test-Path $chaveUsina)) {
+    $dirCred = Join-Path $dirConfig "credenciais"
+    if (-not (Test-Path $dirCred)) { New-Item -ItemType Directory -Force -Path $dirCred | Out-Null }
+    Copy-Item $certUsina  (Join-Path $dirCred "usina.crt")  -Force
+    Copy-Item $chaveUsina (Join-Path $dirCred "usina.key") -Force
+
+    # Heranca desligada: sem isto a pasta herda "Usuarios: leitura" do
+    # ProgramData e qualquer conta da maquina leria a chave privada.
+    & icacls $dirCred /inheritance:r                       | Out-Null
+    & icacls $dirCred /grant:r "*S-1-5-18:(OI)(CI)F"       | Out-Null  # SYSTEM
+    & icacls $dirCred /grant:r "*S-1-5-32-544:(OI)(CI)F"   | Out-Null  # Administradores
+
+    $json = Get-Content $alvoConf -Raw | ConvertFrom-Json
+    $json.mqtt.tls.enabled   = $true
+    $json.mqtt.tls.cert_file = (Join-Path $dirCred "usina.crt")
+    $json.mqtt.tls.key_file  = (Join-Path $dirCred "usina.key")
+    $json | ConvertTo-Json -Depth 40 | Out-File -FilePath $alvoConf -Encoding utf8
+
+    # O CN tem de bater com o topic_slug, senao o broker aceita a conexao e
+    # depois descarta calado tudo o que a usina publicar.
+    $cn = ""
+    $openssl = "C:\Program Files\Git\usr\bin\openssl.exe"
+    if (Test-Path $openssl) {
+        $assunto = & $openssl x509 -in $certUsina -noout -subject 2>$null
+        if ($assunto -match "CN\s*=\s*([^,/]+)") { $cn = $Matches[1].Trim() }
+    }
+    $slug = $json.plant.metadata.topic_slug
+    Write-Host "Certificado da usina instalado em $dirCred"
+    if ($cn) { Write-Host "  CN do certificado : $cn" }
+    Write-Host "  topico da usina   : $slug"
+    if ($cn -and $slug -and $cn -ne $slug) {
+        Write-Host ""
+        Write-Host "  ATENCAO: CN e topico diferentes. O broker vai descartar a telemetria"
+        Write-Host "  desta usina sem avisar. Corrija antes de sair de campo."
+    }
+} else {
+    Write-Host "Sem usina.crt/usina.key no pacote: o gateway nao vai conectar no broker."
+    Write-Host "  Gere o par com deploy\broker\preparar-usina.ps1 e reinstale, ou importe"
+    Write-Host "  pelo console, aba Broker."
+}
+
 # --- 5. so' registra se a config passar na validacao ----------------------
 Write-Host ""
 Write-Host "Validando a configuracao instalada..."

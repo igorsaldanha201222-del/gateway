@@ -31,6 +31,21 @@ datas += [(str(_gerar_build_info()), ".")]
 # junto com o binario. Sem arquivo solto para alguem esquecer de copiar.
 datas += [(str(RAIZ / "config" / "ca-gridco.crt"), ".")]
 
+# Certificado e chave da frota, tambem dentro do executavel: o gateway ja sai
+# de fabrica falando com o broker, sem importar nada em 200 usinas.
+#
+# A chave nao esta no repositorio - vem de um secret do GitHub Actions, gravada
+# em config/ na hora do build. Rodando local, e o gerar-certificado-usina.ps1
+# que a coloca ali.
+for _nome in ("frota.crt", "frota.key"):
+    _arq = RAIZ / "config" / _nome
+    if _arq.is_file():
+        datas += [(str(_arq), ".")]
+    else:
+        raise SystemExit(
+            f"config/{_nome} ausente: o .exe sairia sem credencial e nenhuma usina "
+            f"conectaria. Gere com deploy/broker/gerar-certificado-usina.ps1 -Usina gateway.")
+
 a = Analysis(
     [str(RAIZ / "deploy" / "windows" / "gateway_exe.py")],
     pathex=[str(RAIZ)],

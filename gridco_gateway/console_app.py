@@ -421,6 +421,171 @@ class Ponte:
         except Exception as exc:
             return f"não reiniciou: {exc}"
 
+    # ---------- credencial do broker (mTLS) ----------
+    # O certificado da usina é a credencial: o CN dele vira o usuário no broker.
+    # Não há senha para digitar, guardar ou trocar em 200 PCs. É o mesmo modelo
+    # do IOT2050 V3, que provisionava CA + certificado + chave no cofre do
+    # equipamento; aqui o cofre é o ProgramData com ACL restrita.
+
+    @property
+    def dir_credenciais(self) -> Path:
+        return self.config_path.parent / "credenciais"
+
+    def broker_estado(self) -> dict:
+        """O que está instalado hoje, sem revelar nada da chave privada."""
+        cfg = self._config()
+        tls = ((cfg.get("mqtt") or {}).get("tls") or {})
+        crt = self.dir_credenciais / "usina.crt"
+        estado = {
+            "host": (cfg.get("mqtt") or {}).get("host", "—"),
+            "porta": (cfg.get("mqtt") or {}).get("port", "—"),
+            "tls": bool(tls.get("enabled")),
+            "ca": tls.get("ca_file") or "—",
+            "instalado": crt.exists() and (self.dir_credenciais / "usina.key").exists(),
+            "apontado": bool(tls.get("cert_file")),
+            "pasta": str(self.dir_credenciais),
+        }
+        if crt.exists():
+            estado.update(self._ler_certificado(crt.read_bytes()))
+        return estado
+
+    @staticmethod
+    def _ler_certificado(pem: bytes) -> dict:
+        """CN, emissor e validade — pelo ssl da biblioteca padrão, sem openssl.
+
+        ``_test_decode_cert`` exige arquivo em disco, então o PEM passa por um
+        temporário que é apagado em seguida: a chave privada nunca chega aqui.
+        """
+        import ssl
+        import tempfile
+        try:
+            with tempfile.NamedTemporaryFile("wb", suffix=".pem", delete=False) as tmp:
+                tmp.write(pem)
+                caminho = tmp.name
+            try:
+                info = ssl._ssl._test_decode_cert(caminho)
+            finally:
+                os.unlink(caminho)
+        except Exception as exc:
+            return {"cn": f"ilegível: {exc}"}
+
+        def campo(rdn, chave):
+            for par in rdn or ():
+                for k, v in par:
+                    if k == chave:
+                        return v
+            return ""
+
+        return {
+            "cn": campo(info.get("subject"), "commonName") or "sem CN",
+            "emissor": campo(info.get("issuer"), "commonName") or "?",
+            "validade": info.get("notAfter", "?"),
+        }
+
+    def broker_instalar(self, cert_pem: str, key_pem: str) -> dict:
+        """Valida e instala o par da usina, e só então aponta a configuração.
+
+        Valida de verdade antes de gravar: um par trocado ou um arquivo colado
+        pela metade só apareceria como recusa no CONNACK, lá na usina, dias
+        depois. Aqui ele aparece na hora e com nome.
+        """
+        import ssl
+        import tempfile
+        from .config import ConfigurationManager
+
+        cert_pem = (cert_pem or "").strip()
+        key_pem = (key_pem or "").strip()
+        if "BEGIN CERTIFICATE" not in cert_pem:
+            return {"ok": False, "erro": "o certificado não parece um PEM (falta BEGIN CERTIFICATE)"}
+        if "BEGIN" not in key_pem or "PRIVATE KEY" not in key_pem:
+            return {"ok": False, "erro": "a chave não parece um PEM (falta BEGIN ... PRIVATE KEY)"}
+
+        # load_cert_chain é quem prova que a chave casa com o certificado:
+        # ele falha se o par não corresponder.
+        tmpdir = tempfile.mkdtemp(prefix="gridco-cred-")
+        try:
+            c = Path(tmpdir) / "c.pem"
+            k = Path(tmpdir) / "k.pem"
+            c.write_text(cert_pem + "\n", encoding="ascii")
+            k.write_text(key_pem + "\n", encoding="ascii")
+            try:
+                ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_cert_chain(str(c), str(k))
+            except ssl.SSLError as exc:
+                return {"ok": False, "erro": f"certificado e chave não correspondem: {exc}"}
+            except Exception as exc:
+                return {"ok": False, "erro": f"par inválido: {exc}"}
+            info = self._ler_certificado(cert_pem.encode("ascii"))
+        finally:
+            for p in Path(tmpdir).glob("*"):
+                p.unlink(missing_ok=True)
+            Path(tmpdir).rmdir()
+
+        if info.get("cn", "").startswith("ilegível"):
+            return {"ok": False, "erro": info["cn"]}
+
+        # O CN é o usuário no broker e a ACL prende cada usina ao próprio ramo
+        # do tópico. CN diferente do topic_slug = publicação negada na usina.
+        cfg = self._config()
+        slug = str(((cfg.get("plant") or {}).get("metadata") or {}).get("topic_slug")
+                   or (cfg.get("plant") or {}).get("id") or "")
+        aviso = ""
+        if slug and info.get("cn") != slug:
+            aviso = (f"CN do certificado é '{info['cn']}' e o tópico desta usina é "
+                     f"'{slug}'. O broker vai negar a publicação.")
+
+        destino = self.dir_credenciais
+        try:
+            destino.mkdir(parents=True, exist_ok=True)
+            (destino / "usina.crt").write_text(cert_pem + "\n", encoding="ascii")
+            chave = destino / "usina.key"
+            chave.write_text(key_pem + "\n", encoding="ascii")
+            self._trancar(destino)
+        except Exception as exc:
+            return {"ok": False, "erro": f"não gravou em {destino}: {exc}"}
+
+        try:
+            cfg.setdefault("mqtt", {}).setdefault("tls", {})
+            cfg["mqtt"]["tls"]["enabled"] = True
+            cfg["mqtt"]["tls"]["cert_file"] = str(destino / "usina.crt")
+            cfg["mqtt"]["tls"]["key_file"] = str(chave)
+            gerenciador = ConfigurationManager(self.config_path, self.dir_dados / "config_versions")
+            gerenciador.load()
+            gerenciador.apply(cfg, origin="console")
+        except Exception as exc:
+            return {"ok": False, "erro": f"gravou os arquivos mas não aplicou a configuração: {exc}"}
+
+        return {"ok": True, "aviso": aviso, "servico": self.reiniciar_servico(), **info}
+
+    @staticmethod
+    def _trancar(pasta: Path) -> None:
+        """Só SYSTEM e Administradores enxergam a chave privada.
+
+        Herança desligada: sem isso a pasta herda o 'Usuários: leitura' do
+        ProgramData e qualquer conta da máquina leria a chave.
+        """
+        import subprocess
+        alvo = str(pasta)
+        for args in (["/inheritance:r"],
+                     ["/grant:r", "*S-1-5-18:(OI)(CI)F"],      # SYSTEM
+                     ["/grant:r", "*S-1-5-32-544:(OI)(CI)F"]):  # Administradores
+            subprocess.run(["icacls", alvo, *args], capture_output=True, check=False)
+
+    def broker_remover(self) -> dict:
+        from .config import ConfigurationManager
+        try:
+            for nome in ("usina.crt", "usina.key"):
+                (self.dir_credenciais / nome).unlink(missing_ok=True)
+            cfg = self._config()
+            tls = cfg.setdefault("mqtt", {}).setdefault("tls", {})
+            tls["cert_file"] = ""
+            tls["key_file"] = ""
+            gerenciador = ConfigurationManager(self.config_path, self.dir_dados / "config_versions")
+            gerenciador.load()
+            gerenciador.apply(cfg, origin="console")
+        except Exception as exc:
+            return {"ok": False, "erro": str(exc)}
+        return {"ok": True, "servico": self.reiniciar_servico()}
+
     # chamado pelo HTML
     def dados(self) -> dict:
         cfg = self._config()

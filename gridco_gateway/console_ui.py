@@ -15,7 +15,7 @@ import sys
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from .console_app import Ponte
 
@@ -235,6 +235,9 @@ class Console(tk.Tk):
         f = ttk.Frame(nb); nb.add(f, text="Templates")
         self._aba_templates(f)
 
+        g = ttk.Frame(nb); nb.add(g, text="Broker")
+        self._aba_broker(self._rolavel(g))
+
         e = ttk.Frame(nb); nb.add(e, text="Eventos")
         self.tv_ev = self._tabela(e, ("quando", "nível", "origem", "código", "mensagem"),
                                   (150, 80, 110, 170, 420), elastica=4)
@@ -255,6 +258,8 @@ class Console(tk.Tk):
             self._carregar_catalogo()
         elif aba == "Templates":
             self._carregar_templates()
+        elif aba == "Broker":
+            self._carregar_broker()
 
     # ---------------- cadastro ----------------
     def _aba_cadastro(self, pai) -> None:
@@ -524,6 +529,120 @@ class Console(tk.Tk):
             self.b_loc_parar.config(state="disabled")
             return
         self._localizar_estado()
+
+    # ---------------- broker: certificado da usina ----------------
+    def _aba_broker(self, pai) -> None:
+        estado = ttk.Labelframe(pai, text=" Ligação com o servidor ", padding=10)
+        estado.pack(fill="x", padx=10, pady=10)
+        self.lb_brk = tk.Label(estado, text="—", bg=SURF, fg=INK, font=MONO,
+                               anchor="w", justify="left")
+        self.lb_brk.pack(fill="x")
+
+        form = ttk.Labelframe(pai, text=" Certificado desta usina ", padding=10)
+        form.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        tk.Label(form, bg=SURF, fg=INK2, font=("Segoe UI", 8), anchor="w", justify="left",
+                 text="O certificado é a credencial: não há senha a digitar. O CN dele tem de "
+                      "ser igual ao tópico desta usina, senão o broker nega a publicação.\n"
+                      "A autoridade (ca-gridco.crt) já está dentro do programa — não precisa "
+                      "carregar."
+                 ).pack(fill="x", pady=(0, 10))
+
+        self._pem = {}
+        for chave, rotulo, arquivo in (("cert", "Certificado (usina.crt)", "usina.crt"),
+                                       ("key", "Chave privada (usina.key)", "usina.key")):
+            bloco = ttk.Frame(form)
+            bloco.pack(fill="x", pady=(0, 10))
+            cab = ttk.Frame(bloco); cab.pack(fill="x")
+            ttk.Label(cab, text=rotulo).pack(side="left")
+            ttk.Button(cab, text="Abrir arquivo…",
+                       command=lambda k=chave, a=arquivo: self._abrir_pem(k, a)).pack(side="right")
+            caixa = tk.Text(bloco, height=6, bg=FIELD, fg=INK, font=("Consolas", 8),
+                            relief="solid", borderwidth=1, wrap="none",
+                            highlightbackground=HARD, insertbackground=INK)
+            caixa.pack(fill="x", pady=(4, 0))
+            self._pem[chave] = caixa
+
+        acoes = ttk.Frame(form); acoes.pack(fill="x")
+        self.b_brk = ttk.Button(acoes, text="Instalar e aplicar", style="Acao.TButton",
+                                command=self._instalar_broker)
+        self.b_brk.pack(side="left")
+        ttk.Button(acoes, text="Remover", command=self._remover_broker).pack(side="left", padx=8)
+        self.lb_brk_msg = tk.Label(acoes, text="", bg=SURF, fg=INK2, font=("Segoe UI", 8),
+                                   anchor="w", justify="left")
+        self.lb_brk_msg.pack(side="left", padx=10, fill="x", expand=True)
+
+    def _abrir_pem(self, chave: str, sugestao: str) -> None:
+        caminho = filedialog.askopenfilename(
+            title=f"Selecione {sugestao}", parent=self,
+            filetypes=[("Certificado PEM", "*.crt *.pem *.key"), ("Todos", "*.*")])
+        if not caminho:
+            return
+        try:
+            texto = Path(caminho).read_text(encoding="ascii", errors="replace")
+        except OSError as exc:
+            self.lb_brk_msg.config(text=f"não leu: {exc}", fg=P1)
+            return
+        self._pem[chave].delete("1.0", "end")
+        self._pem[chave].insert("1.0", texto)
+
+    def _carregar_broker(self) -> None:
+        e = self.ponte.broker_estado()
+        linhas = [
+            f"Servidor    {e.get('host')}:{e.get('porta')}"
+            + ("   TLS ligado" if e.get("tls") else "   TLS DESLIGADO"),
+            f"Autoridade  {e.get('ca')}",
+        ]
+        if e.get("instalado"):
+            linhas += [
+                f"Certificado {e.get('cn', '?')}   emitido por {e.get('emissor', '?')}",
+                f"Validade    até {e.get('validade', '?')}",
+            ]
+            if not e.get("apontado"):
+                linhas.append("ATENÇÃO: os arquivos estão na pasta mas a configuração não aponta "
+                              "para eles. Instale de novo.")
+        else:
+            linhas.append("Certificado NÃO INSTALADO — o broker vai recusar a conexão.")
+        self.lb_brk.config(text="\n".join(linhas),
+                           fg=INK if e.get("instalado") else P1)
+
+    def _instalar_broker(self) -> None:
+        cert = self._pem["cert"].get("1.0", "end")
+        chave = self._pem["key"].get("1.0", "end")
+        self.b_brk.config(state="disabled")
+        self.lb_brk_msg.config(text="validando o par…", fg=INK2)
+
+        def trabalho():
+            r = self.ponte.broker_instalar(cert, chave)
+            self.after(0, lambda: self._broker_instalou(r))
+
+        threading.Thread(target=trabalho, name="instalar-cert", daemon=True).start()
+
+    def _broker_instalou(self, r: dict) -> None:
+        self.b_brk.config(state="normal")
+        if not r.get("ok"):
+            self.lb_brk_msg.config(text=str(r.get("erro", "falhou")), fg=P1)
+            return
+        # A chave privada some da tela assim que entra no cofre: não fica
+        # exposta em janela aberta na sala de comando.
+        self._pem["key"].delete("1.0", "end")
+        self._carregar_broker()
+        if r.get("aviso"):
+            self.lb_brk_msg.config(text=r["aviso"], fg=P2)
+            messagebox.showwarning("Certificado instalado, mas com ressalva", r["aviso"], parent=self)
+            return
+        self.lb_brk_msg.config(text=f"instalado para {r.get('cn')} · serviço {r.get('servico')}",
+                               fg=INK2)
+
+    def _remover_broker(self) -> None:
+        if not messagebox.askyesno("Remover certificado",
+                                   "O gateway deixa de conectar no servidor até que outro "
+                                   "certificado seja instalado. Continuar?", parent=self):
+            return
+        r = self.ponte.broker_remover()
+        self.lb_brk_msg.config(text=str(r.get("erro")) if not r.get("ok") else "removido",
+                               fg=P1 if not r.get("ok") else INK2)
+        self._carregar_broker()
 
     # ---------------- templates instalados ----------------
     ROTULO_ESTADO = {

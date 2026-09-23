@@ -48,8 +48,8 @@
     "tls": {
       "enabled": true,
       "ca_file": "embutido:ca-gridco.crt",
-      "cert_file": "",
-      "key_file": "",
+      "cert_file": "embutido:frota.crt",
+      "key_file": "embutido:frota.key",
       "server_hostname": "app.gridco.com.br",
       "insecure": false
     }
