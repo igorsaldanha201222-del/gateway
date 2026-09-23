@@ -135,6 +135,9 @@ class Console(tk.Tk):
         self.lb_planta.pack(anchor="w")
         self.lb_cfg = tk.Label(t, text="—", bg=BANNER, fg=INK2, font=("Consolas", 8))
         self.lb_cfg.pack(anchor="w")
+        # Versao e commit do binario: e' o que responde "este PC ja' atualizou?".
+        self.lb_versao = tk.Label(t, text="", bg=BANNER, fg=INK2, font=("Consolas", 8))
+        self.lb_versao.pack(anchor="w")
 
         d = tk.Frame(f, bg=BANNER)
         d.pack(side="right")
@@ -739,7 +742,8 @@ class Console(tk.Tk):
             return
 
         self.lb_planta.config(text=d["planta"])
-        self.lb_cfg.config(text=d["configuracao"])
+        self.lb_cfg.config(text="config " + d["configuracao"])
+        self.lb_versao.config(text="app " + d.get("versao_app", "?"))
         self._pinta_cel(self.v_svc, d["servico"], "" if d["servico"] == "RODANDO" else "p1")
         self._pinta_cel(self.v_aq, d["aquisicao"])
 

@@ -1,23 +1,33 @@
 # Atualiza o gateway a partir de um release do GitHub.
 #
-# Uso, num PowerShell COMO ADMINISTRADOR, no PC da usina:
-#     .\atualizar.ps1 -Repo "sua-org/gridco-gateway"
+# Manual, no PC da usina, num PowerShell como administrador:
+#     .\atualizar.ps1 -Repo "org/repo"
 #
-# Fluxo: le a versao instalada, consulta o release mais recente, e so' troca o
-# binario se a versao for diferente e o SHA-256 conferir. Guarda o anterior
-# para rollback.
+# Automatico: o instalar.ps1 registra uma tarefa que chama este script com
+# -Automatico. Ver "Atualizacao automatica" no LEIAME.md.
 #
-# Repositorio privado: exporte um token de leitura antes de rodar, com
-#     $env:GRIDCO_GITHUB_TOKEN = "<token>"
-# O script nunca grava o token em disco.
+# O que protege uma frota de 200 usinas de um binario ruim:
+#   1. SHA-256 conferido antes de trocar;
+#   2. o binario anterior e' guardado, e se o servico nao voltar a subir a
+#      troca e' DESFEITA sozinha;
+#   3. espera aleatoria antes de baixar, para 200 PCs nao caírem juntos;
+#   4. canal: por padrao so' aceita release estavel, nunca pre-release.
+#
+# Repositorio privado: variavel de MAQUINA GRIDCO_GITHUB_TOKEN com um token de
+# leitura. O script nunca grava o token em disco.
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Repo,
     [string]$Tag,
+    [ValidateSet("estavel", "teste")][string]$Canal = "estavel",
     [string]$DestinoPrograma = "C:\Program Files\Grid Co\Gateway",
-    [string]$Tarefa          = "GridCo Gateway",
+    [string]$DestinoDados    = "C:\ProgramData\GridCo\Gateway",
+    [string]$Servico         = "GridCoGateway",
     [string]$Ativo           = "gridco-gateway.exe",
+    [int]$EsperaMaxSegundos  = 0,
+    [int]$SegundosParaConfirmar = 90,
+    [switch]$Automatico,
     [switch]$Forcar,
     [switch]$Rollback
 )
@@ -25,106 +35,185 @@ param(
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-$admin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
-         ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $admin) { throw "Rode este script num PowerShell aberto como administrador." }
+$pastaLog = Join-Path $DestinoDados "data\logs"
+$arquivoLog = Join-Path $pastaLog "atualizacao.log"
 
-$alvo    = Join-Path $DestinoPrograma $Ativo
-$backup  = Join-Path $DestinoPrograma "$Ativo.anterior"
-if (-not (Test-Path $alvo)) { throw "Gateway nao instalado em $alvo. Rode instalar.ps1 antes." }
-
-function Reiniciar-Tarefa {
-    if (Get-ScheduledTask -TaskName $Tarefa -ErrorAction SilentlyContinue) {
-        Start-ScheduledTask -TaskName $Tarefa
-        Start-Sleep -Seconds 3
-        $p = Get-Process -Name "gridco-gateway" -ErrorAction SilentlyContinue
-        if ($p) { Write-Host "Gateway no ar: pid $($p.Id)" }
-        else { Write-Warning "A tarefa foi iniciada mas o processo nao aparece. Confira o log." }
-    }
+function Registrar {
+    param([string]$Texto, [string]$Nivel = "INFO")
+    $linha = "{0} {1} {2}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Nivel.PadRight(7), $Texto
+    if (-not (Test-Path $pastaLog)) { New-Item -ItemType Directory -Force -Path $pastaLog | Out-Null }
+    Add-Content -LiteralPath $arquivoLog -Value $linha -Encoding utf8
+    if (-not $Automatico) { Write-Host $linha }
 }
 
-# ---------- rollback ----------
-if ($Rollback) {
-    if (-not (Test-Path $backup)) { throw "Nao ha versao anterior guardada em $backup" }
-    Write-Host "Voltando para a versao anterior..."
-    try { Stop-ScheduledTask -TaskName $Tarefa -ErrorAction SilentlyContinue } catch {}
+function Parar { param([string]$Texto) Registrar $Texto "ERRO"; exit 1 }
+
+$admin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+         ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $admin) { Parar "Precisa rodar como administrador." }
+
+$alvo   = Join-Path $DestinoPrograma $Ativo
+$backup = Join-Path $DestinoPrograma "$Ativo.anterior"
+if (-not (Test-Path $alvo)) { Parar "Gateway nao instalado em $alvo." }
+
+function Servico-Rodando {
+    $s = Get-Service -Name $Servico -ErrorAction SilentlyContinue
+    return ($s -and $s.Status -eq "Running")
+}
+
+function Subir-Servico {
+    try { Start-Service -Name $Servico -ErrorAction Stop } catch {}
+}
+
+function Derrubar-Servico {
+    try { Stop-Service -Name $Servico -Force -ErrorAction SilentlyContinue } catch {}
     Start-Sleep -Seconds 2
-    Get-Process -Name "gridco-gateway" -ErrorAction SilentlyContinue | Stop-Process -Force
-    Start-Sleep -Seconds 1
-    $atual = Join-Path $DestinoPrograma "$Ativo.revertido"
-    Move-Item $alvo $atual -Force
+    # O bootloader do PyInstaller gera dois processos; por nome pega os dois.
+    Get-Process -Name "gridco-gateway" -ErrorAction SilentlyContinue |
+        Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+}
+
+function Confirmar-Saude {
+    <#
+      Sobe o servico e observa. Nao basta o SCM dizer "Running": um binario
+      quebrado pode subir e morrer em seguida, e o SCM reinicia em laco. Por
+      isso exige dois processos vivos e estado estavel em duas medicoes.
+    #>
+    param([int]$Segundos)
+    Subir-Servico
+    $limite = (Get-Date).AddSeconds($Segundos)
+    $estaveis = 0
+    while ((Get-Date) -lt $limite) {
+        Start-Sleep -Seconds 5
+        $processos = @(Get-Process -Name "gridco-gateway" -ErrorAction SilentlyContinue)
+        if ((Servico-Rodando) -and $processos.Count -ge 1) {
+            $estaveis++
+            if ($estaveis -ge 3) { return $true }
+        } else {
+            $estaveis = 0
+            Subir-Servico
+        }
+    }
+    return $false
+}
+
+# ---------- rollback pedido a mao ----------
+if ($Rollback) {
+    if (-not (Test-Path $backup)) { Parar "Nao ha versao anterior em $backup" }
+    Registrar "Rollback manual pedido."
+    Derrubar-Servico
+    $temp = Join-Path $DestinoPrograma "$Ativo.trocando"
+    Move-Item $alvo $temp -Force
     Move-Item $backup $alvo -Force
-    Move-Item $atual $backup -Force
-    Write-Host "Rollback aplicado: $(& $alvo --version)"
-    Reiniciar-Tarefa
-    return
+    Move-Item $temp $backup -Force
+    if (Confirmar-Saude 60) { Registrar ("Rollback aplicado: " + (& $alvo --version)) }
+    else { Registrar "Rollback aplicado mas o servico nao confirmou." "AVISO" }
+    exit 0
+}
+
+# ---------- espera aleatoria ----------
+if ($EsperaMaxSegundos -gt 0) {
+    $espera = Get-Random -Minimum 0 -Maximum $EsperaMaxSegundos
+    Registrar "Aguardando ${espera}s antes de consultar (dispersao da frota)."
+    Start-Sleep -Seconds $espera
 }
 
 # ---------- versao instalada ----------
-$instalada = (& $alvo --version).Trim()
-Write-Host "Instalada : $instalada"
+try { $instalada = (& $alvo --version).Trim() } catch { Parar "Nao consegui ler a versao instalada: $_" }
 
 # ---------- release ----------
 $cabecalhos = @{ "User-Agent" = "gridco-gateway-updater"; "Accept" = "application/vnd.github+json" }
 if ($env:GRIDCO_GITHUB_TOKEN) { $cabecalhos["Authorization"] = "Bearer $env:GRIDCO_GITHUB_TOKEN" }
 
-if ($Tag) { $url = "https://api.github.com/repos/$Repo/releases/tags/$Tag" }
-else      { $url = "https://api.github.com/repos/$Repo/releases/latest" }
-
 try {
-    $release = Invoke-RestMethod -Uri $url -Headers $cabecalhos
+    if ($Tag) {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/$Tag" -Headers $cabecalhos
+    } elseif ($Canal -eq "teste") {
+        # Inclui pre-release: e' o canal de quem testa antes da frota.
+        $release = (Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=10" -Headers $cabecalhos |
+                    Where-Object { -not $_.draft } | Select-Object -First 1)
+    } else {
+        # /releases/latest ja' exclui rascunho e pre-release.
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $cabecalhos
+    }
 } catch {
-    throw "Nao consegui consultar $url : $($_.Exception.Message)"
+    Registrar "Nao consegui consultar o GitHub: $($_.Exception.Message)" "AVISO"
+    exit 0   # sem rede nao e' falha: tenta de novo na proxima janela
 }
-$publicada = ($release.tag_name -replace '^v', '').Trim()
-Write-Host "No GitHub : $publicada  ($($release.tag_name))"
+if (-not $release) { Registrar "Nenhum release no canal '$Canal'." "AVISO"; exit 0 }
+if ($release.prerelease -and $Canal -eq "estavel") {
+    Registrar "Release $($release.tag_name) e' pre-release; canal estavel ignora." ; exit 0
+}
 
+$publicada = ($release.tag_name -replace '^v', '').Trim()
 if ($publicada -eq $instalada -and -not $Forcar) {
-    Write-Host ""
-    Write-Host "Ja esta na versao publicada. Nada a fazer. (-Forcar reinstala mesmo assim.)"
-    return
+    Registrar "Ja esta na $instalada. Nada a fazer."
+    exit 0
 }
+
+# Versao que ja' derrubou o servico neste PC nao e' tentada de novo a cada
+# janela: seria um laco de atualizar-quebrar-desfazer ate' alguem olhar.
+$recusada = Join-Path $DestinoDados "data\versao-recusada.txt"
+if ((Test-Path $recusada) -and -not $Forcar) {
+    $bloqueada = (Get-Content $recusada -Raw).Trim()
+    if ($bloqueada -eq $publicada) {
+        Registrar "Versao $publicada ja' falhou neste PC e esta bloqueada. Use -Forcar para insistir." "AVISO"
+        exit 0
+    }
+}
+Registrar "Instalada $instalada -> publicada $publicada ($($release.tag_name), canal $Canal)."
 
 # ---------- download ----------
 $aExe = $release.assets | Where-Object { $_.name -eq $Ativo }
 $aSha = $release.assets | Where-Object { $_.name -eq "$Ativo.sha256" }
-if (-not $aExe) { throw "O release nao tem o ativo '$Ativo'." }
-if (-not $aSha) { throw "O release nao tem '$Ativo.sha256'. Sem soma de verificacao eu nao troco o binario." }
+if (-not $aExe) { Parar "O release nao tem o ativo '$Ativo'." }
+if (-not $aSha) { Parar "O release nao tem '$Ativo.sha256'. Sem soma de verificacao nao troco o binario." }
 
 $tmp = Join-Path $env:TEMP ("gridco-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $novoExe = Join-Path $tmp $Ativo
 $novoSha = Join-Path $tmp "$Ativo.sha256"
+$baixar = $cabecalhos.Clone(); $baixar["Accept"] = "application/octet-stream"
+try {
+    Invoke-WebRequest -Uri $aExe.url -Headers $baixar -OutFile $novoExe
+    Invoke-WebRequest -Uri $aSha.url -Headers $baixar -OutFile $novoSha
+} catch {
+    Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    Registrar "Falha no download: $($_.Exception.Message)" "AVISO"
+    exit 0
+}
 
-$baixar = $cabecalhos.Clone()
-$baixar["Accept"] = "application/octet-stream"
-Write-Host "Baixando..."
-Invoke-WebRequest -Uri $aExe.url -Headers $baixar -OutFile $novoExe
-Invoke-WebRequest -Uri $aSha.url -Headers $baixar -OutFile $novoSha
-
-# ---------- verificacao ----------
 $esperado = ((Get-Content $novoSha -Raw) -split '\s+')[0].Trim().ToLower()
 $obtido   = (Get-FileHash $novoExe -Algorithm SHA256).Hash.ToLower()
 if ($esperado -ne $obtido) {
     Remove-Item $tmp -Recurse -Force
-    throw "SHA-256 nao confere. Esperado $esperado, obtido $obtido. O binario NAO foi trocado."
+    Parar "SHA-256 nao confere (esperado $esperado, obtido $obtido). Binario NAO trocado."
 }
-Write-Host "SHA-256 confere."
+Registrar "SHA-256 confere."
 
-# ---------- troca ----------
-Write-Host "Parando o gateway..."
-try { Stop-ScheduledTask -TaskName $Tarefa -ErrorAction SilentlyContinue } catch {}
-Start-Sleep -Seconds 2
-Get-Process -Name "gridco-gateway" -ErrorAction SilentlyContinue | Stop-Process -Force
-Start-Sleep -Seconds 2
-
+# ---------- troca, com desfazer automatico ----------
+Derrubar-Servico
 if (Test-Path $backup) { Remove-Item $backup -Force }
 Move-Item $alvo $backup -Force
 Copy-Item $novoExe $alvo -Force
 Remove-Item $tmp -Recurse -Force
 
-$agora = (& $alvo --version).Trim()
-Write-Host "Atualizado: $instalada -> $agora"
-Write-Host "Anterior guardado em: $backup  (volte com -Rollback)"
+if (Confirmar-Saude $SegundosParaConfirmar) {
+    $agora = try { (& $alvo --version).Trim() } catch { "?" }
+    Registrar "ATUALIZADO para $agora. Anterior em $backup."
+    exit 0
+}
 
-Reiniciar-Tarefa
+Registrar "O servico nao confirmou em ${SegundosParaConfirmar}s. DESFAZENDO." "ERRO"
+Derrubar-Servico
+Remove-Item $alvo -Force -ErrorAction SilentlyContinue
+Move-Item $backup $alvo -Force
+if (Confirmar-Saude 60) {
+    Registrar "Voltou para $instalada e o servico subiu. A versao $publicada fica bloqueada aqui." "AVISO"
+    # Marca para nao tentar de novo em laco a cada janela.
+    Set-Content -LiteralPath (Join-Path $DestinoDados "data\versao-recusada.txt") `
+        -Value $publicada -Encoding utf8
+    exit 1
+}
+Parar "Desfez a troca e MESMO ASSIM o servico nao subiu. Precisa de alguem no PC."

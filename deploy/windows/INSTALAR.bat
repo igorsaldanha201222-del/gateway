@@ -3,6 +3,17 @@ rem Instalador de dois cliques do Gateway Grid Co.
 rem Pede elevacao sozinho, entra na propria pasta e libera os arquivos vindos
 rem de rede. Nao precisa abrir PowerShell nem saber o caminho.
 
+rem ===========================================================
+rem  CONFIGURACAO DA FROTA - edite estas duas linhas uma vez.
+rem
+rem  REPO ligado = o PC passa a se atualizar sozinho, diariamente
+rem  as 03:00, buscando release novo deste repositorio.
+rem  Deixe REPO vazio para instalar SEM atualizacao automatica.
+rem ===========================================================
+set "REPO=igorsaldanha201222-del/gateway"
+set "CANAL=estavel"
+rem ===========================================================
+
 title Instalar Gateway Grid Co
 cd /d "%~dp0"
 
@@ -41,7 +52,15 @@ echo Liberando arquivos...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -Path '%~dp0' -Recurse | Unblock-File -ErrorAction SilentlyContinue"
 
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0instalar.ps1"
+if defined REPO (
+    echo Atualizacao automatica: LIGADA  ^(%REPO%, canal %CANAL%^)
+    echo.
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0instalar.ps1" -Repo "%REPO%" -Canal %CANAL%
+) else (
+    echo Atualizacao automatica: desligada ^(REPO vazio no topo deste arquivo^)
+    echo.
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0instalar.ps1"
+)
 set RESULTADO=%errorlevel%
 
 echo.

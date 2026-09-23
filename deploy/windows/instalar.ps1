@@ -22,7 +22,13 @@ param(
     [string]$DestinoDados    = "C:\ProgramData\GridCo\Gateway",
     [string]$Tarefa          = "GridCo Gateway",
     [string]$Servico         = "GridCoGateway",
-    [switch]$IniciarAquisicao
+    [switch]$IniciarAquisicao,
+    # Atualizacao automatica: informe o repositorio para ligar.
+    [string]$Repo,
+    [ValidateSet("estavel", "teste")][string]$Canal = "estavel",
+    [string]$HoraAtualizacao = "03:00",
+    [int]$DispersaoMinutos   = 120,
+    [string]$TarefaAtualizacao = "GridCo Gateway - atualizacao"
 )
 
 $ErrorActionPreference = "Stop"
@@ -150,7 +156,42 @@ Write-Host "Servico        : $($sv.Name)  ($($sv.DisplayName))"
 Write-Host "Estado         : $($sv.Status)"
 Write-Host "Inicializacao  : $((Get-CimInstance Win32_Service -Filter "Name='$Servico'").StartMode)"
 Write-Host ""
+# --- 9. atualizacao automatica --------------------------------------------
+$alvoAtualizar = Join-Path $DestinoPrograma "atualizar.ps1"
+Copy-Item (Join-Path $PSScriptRoot "atualizar.ps1") $alvoAtualizar -Force -ErrorAction SilentlyContinue
+
+if (Get-ScheduledTask -TaskName $TarefaAtualizacao -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName $TarefaAtualizacao -Confirm:$false
+}
+
+if ($Repo) {
+    # Dispersao: 200 PCs acordando no mesmo minuto batem no GitHub juntos e
+    # saturam o link da usina. Cada um sorteia o proprio atraso.
+    $argumentos = ('-NoProfile -ExecutionPolicy Bypass -File "{0}" -Repo "{1}" -Canal {2} ' +
+                   '-Automatico -EsperaMaxSegundos {3}') -f
+                   $alvoAtualizar, $Repo, $Canal, ($DispersaoMinutos * 60)
+    $acaoAt = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argumentos `
+        -WorkingDirectory $DestinoPrograma
+    $gatilhoAt = New-ScheduledTaskTrigger -Daily -At $HoraAtualizacao
+    $contaAt = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    $opcoesAt = New-ScheduledTaskSettingsSet -StartWhenAvailable `
+        -DontStopIfGoingOnBatteries -AllowStartIfOnBatteries `
+        -ExecutionTimeLimit (New-TimeSpan -Hours 4) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName $TarefaAtualizacao -Action $acaoAt -Trigger $gatilhoAt `
+        -Principal $contaAt -Settings $opcoesAt `
+        -Description "Busca release novo de $Repo (canal $Canal), confere SHA-256 e desfaz sozinho se o servico nao voltar." | Out-Null
+    Write-Host ""
+    Write-Host "Atualizacao automatica: diaria as $HoraAtualizacao, canal $Canal,"
+    Write-Host "  espalhada em ate $DispersaoMinutos min, de $Repo."
+} else {
+    Write-Host ""
+    Write-Host "Atualizacao automatica NAO ligada. Para ligar, reinstale com:"
+    Write-Host "  .\instalar.ps1 -Repo ""<org>/<repo>"""
+}
+
+Write-Host ""
 Write-Host "Log            : $dirDados\logs\gateway.log"
+Write-Host "Log atualizacao: $dirDados\logs\atualizacao.log"
 Write-Host "Banco          : $dirDados\gateway.db"
 Write-Host "Configuracao   : $alvoConf"
 Write-Host ""

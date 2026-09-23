@@ -124,18 +124,59 @@ qualquer administrador local — considere isso ao decidir quem tem acesso ao PC
 ## Atualizar pelo GitHub
 
 `.github\workflows\build-windows.yml` compila ao empurrar uma tag `v*`, roda os
-testes, valida a config e anexa ao release `gridco-gateway.exe` e
-`gridco-gateway.exe.sha256`.
+testes, valida a config, confere os binários e anexa ao release os dois `.exe`
+com seus `.sha256`.
+
+### À mão
 
 ```powershell
-.\atualizar.ps1 -Repo "<org>/<repo>"           # confere o SHA-256 antes de trocar
-.\atualizar.ps1 -Repo "<org>/<repo>" -Rollback # volta o binário anterior
+.\atualizar.ps1 -Repo "<org>/<repo>"
+.\atualizar.ps1 -Repo "<org>/<repo>" -Rollback   # volta o binário anterior
+.\atualizar.ps1 -Repo "<org>/<repo>" -Canal teste  # aceita pré-release
 ```
 
-Repositório privado precisa de token de leitura em `GRIDCO_GITHUB_TOKEN`.
+### Automática — é o modo para uma frota
 
-⚠ **Ainda não funciona**: o repositório não existe. Ver *O que falta para o
-GitHub funcionar* no `ESTADO.md`.
+Ligada na instalação, informando o repositório:
+
+```powershell
+.\instalar.ps1 -Repo "<org>/<repo>"
+```
+
+Isso registra a tarefa **GridCo Gateway - atualizacao**: diária às 03:00, como
+SYSTEM. A partir daí, `git push` de uma tag aqui atualiza a frota sozinha.
+
+Quatro proteções, porque com 200 usinas um binário ruim publicado derrubaria
+todas de uma vez:
+
+| | |
+|---|---|
+| **SHA-256** | conferido antes de trocar; não bate, não troca |
+| **Desfaz sozinho** | se o serviço não ficar de pé por 15 s seguidos em até 90 s, o binário anterior volta e o serviço sobe de novo |
+| **Versão bloqueada** | a que falhou é anotada em `data\versao-recusada.txt` e não é tentada de novo, para não virar laço de quebrar-e-desfazer |
+| **Dispersão** | cada PC sorteia até 2 h de atraso, para 200 não baterem no GitHub no mesmo minuto |
+
+O canal padrão é **estável**: `/releases/latest` já exclui rascunho e
+pré-release. Marque um release como *pre-release* no GitHub para ele chegar só
+a quem instalou com `-Canal teste` — é como se testa numa usina antes da frota.
+
+Sem rede, o script registra aviso e sai com código 0: tenta na próxima janela.
+
+Log em `C:\ProgramData\GridCo\Gateway\data\logs\atualizacao.log`.
+
+Repositório privado precisa de um token de leitura na variável de **máquina**
+`GRIDCO_GITHUB_TOKEN` — a tarefa roda como SYSTEM e não enxerga variável de
+usuário.
+
+### O que a atualização NÃO faz
+
+Troca só o binário. **Configuração da usina, fila e histórico ficam intactos.**
+
+Isso inclui os templates já cadastrados: quando um equipamento é cadastrado, os
+blocos e variáveis são **copiados** do catálogo para o `gateway.json` daquela
+usina. Binário novo traz catálogo novo, mas não mexe em quem já está lá. Para
+propagar a correção, use a aba **Templates** do console, que compara os dois
+lados e mostra o que muda antes de aplicar.
 
 ## Detalhes do empacotamento que não são óbvios
 

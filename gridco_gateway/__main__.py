@@ -132,9 +132,12 @@ def main(stop_event: threading.Event | None = None) -> int:
             signal.signal(signum, shutdown)
 
     plant = config.get("plant", {}) if isinstance(config.get("plant"), dict) else {}
+    from .versao import longa as versao_longa
+    # A primeira linha do log tem que permitir dizer, sem entrar no PC, qual
+    # binario esta rodando ali.
     log.info(
         "Gateway Grid Co %s iniciando | planta=%s | config=%s",
-        __version__,
+        versao_longa(),
         plant.get("id") or plant.get("name") or "(sem id)",
         args.config,
     )

@@ -427,9 +427,11 @@ class Ponte:
         planta = cfg.get("plant") if isinstance(cfg.get("plant"), dict) else {}
         runtime = cfg.get("runtime") if isinstance(cfg.get("runtime"), dict) else {}
         d = self._banco()
+        from .versao import longa as versao_longa
         d.update({
             "planta": (planta or {}).get("name") or (planta or {}).get("id") or "sem planta",
             "configuracao": f"{cfg.get('configuration_id', '—')} · rev {cfg.get('revision', '?')}",
+            "versao_app": versao_longa(),
             "servico": estado_servico(),
             "aquisicao": "LIGADA" if (runtime or {}).get("enabled") else "PARADA",
             "canais": len(cfg.get("channels") or []),

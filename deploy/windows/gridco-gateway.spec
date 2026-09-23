@@ -10,16 +10,22 @@ Roda a partir da raiz do projeto:
     py -3 -m PyInstaller deploy/windows/gridco-gateway.spec --noconfirm
 """
 
+import sys as _sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 
 RAIZ = Path(SPECPATH).resolve().parents[1]  # deploy/windows -> deploy -> raiz
+_sys.path.insert(0, str(Path(SPECPATH)))
+from gerar_build_info import gerar as _gerar_build_info  # noqa: E402
 
 # tzdata e' pacote so' de dados. O Windows nao tem base de fusos do sistema,
 # entao sem isto o zoneinfo("America/Sao_Paulo") do decoder falha no PC da
 # usina - e a energia diaria vira data errada, nao erro.
 datas = collect_data_files("tzdata")
+
+# Carimbo de origem: versao, commit e data.
+datas += [(str(_gerar_build_info()), ".")]
 
 a = Analysis(
     [str(RAIZ / "deploy" / "windows" / "gateway_exe.py")],

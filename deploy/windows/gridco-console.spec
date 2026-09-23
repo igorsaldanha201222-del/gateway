@@ -18,7 +18,15 @@ from PyInstaller.utils.hooks import collect_data_files
 
 RAIZ = Path(SPECPATH).resolve().parents[1]
 
+import sys as _sys
+_sys.path.insert(0, str(Path(SPECPATH)))
+from gerar_build_info import gerar as _gerar_build_info  # noqa: E402
+
 datas = collect_data_files("tzdata")
+
+# Carimbo de origem: versao, commit e data. E' o que diz, olhando a tela numa
+# usina remota, se aquele PC ja' pegou o binario novo.
+datas += [(str(_gerar_build_info()), ".")]
 
 # O catalogo vai dentro: e' ele que alimenta o cadastro de equipamento.
 datas += [(str(RAIZ / "config" / "template_catalog.json"), ".")]
