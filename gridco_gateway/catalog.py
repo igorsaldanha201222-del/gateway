@@ -17,16 +17,34 @@ class CatalogError(ValueError):
     pass
 
 
+# O que NAO entra na impressao digital: e' rotulo, nao leitura. Renomear um
+# modelo nao pode marcar 200 usinas como desatualizadas.
+_COSMETICO = {"name", "description", "version", "metadata", "ui_contract_key_count"}
+
+
+def _funcional(valor: Any) -> Any:
+    if isinstance(valor, dict):
+        return {k: _funcional(v) for k, v in valor.items() if k not in _COSMETICO}
+    if isinstance(valor, list):
+        return [_funcional(v) for v in valor]
+    return valor
+
+
 def digest_modelo(template: Any, requests: Any, fields: Any) -> str:
-    """Impressao digital do conteudo de um modelo.
+    """Impressao digital do que o modelo LE, nao de como ele se chama.
 
     Calculada aqui, e nao lida do catalogo: o campo ``semantic_sha256`` que vem
     no arquivo foi produzido por outro processo e nao e' reproduzivel a partir
     de template+requests+fields. Para comparar o que esta numa usina com o que
     esta no catalogo, os dois lados precisam ser medidos pela mesma regua.
+
+    Nome, descricao e metadados ficam de fora de proposito: mudam por arrumacao
+    e nao alteram um unico registrador lido.
     """
     return hashlib.sha256(canonical_json({
-        "template": template, "requests": requests, "fields": fields,
+        "template": _funcional(template),
+        "requests": _funcional(requests),
+        "fields": _funcional(fields),
     }).encode("utf-8")).hexdigest()
 
 
@@ -266,7 +284,9 @@ class TemplateCatalog:
             "device_type": device_type,
             "enabled": device_value.get("enabled") is not False,
             "poll_interval_ms": max(100, int(device_value.get("poll_interval_ms", 1000))),
-            "publish_interval_ms": max(100, int(device_value.get("publish_interval_ms", 10_000))),
+            # 1 minuto e' o padrao de envio da frota. A leitura Modbus continua
+            # a cada 1 s: o que espaca e' a publicacao, nao a aquisicao.
+            "publish_interval_ms": max(100, int(device_value.get("publish_interval_ms", 60_000))),
             "stale_timeout_ms": max(100, int(device_value.get("stale_timeout_ms", 30_000))),
             "commands_enabled": False,
             "metadata": device_metadata,

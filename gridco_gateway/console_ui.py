@@ -47,8 +47,26 @@ MONO_G = ("Consolas", 13, "bold")
 PERIODO_MS = 5000
 
 
+def _avisar_dpi() -> None:
+    """Diz ao Windows que o app sabe lidar com escala.
+
+    Sem isso, em tela a 125% ou 150% o Windows estica a janela por cima: tudo
+    fica borrado e os quadros nao cabem no que foi calculado. Foi o que cortou
+    o campo de IP numa maquina e nao na outra.
+    """
+    try:
+        import ctypes
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)   # por monitor
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
 class Console(tk.Tk):
     def __init__(self) -> None:
+        _avisar_dpi()
         super().__init__()
         self.ponte = Ponte()
         self.title("Gateway Grid Co")
@@ -148,6 +166,38 @@ class Console(tk.Tk):
         self.v_hora = self._cel(d, "Atualizado")
         tk.Frame(self, bg=HARD, height=1).pack(fill="x")
 
+    def _rolavel(self, pai):
+        """Devolve um quadro com rolagem vertical.
+
+        Conteudo de formulario nao cabe em toda tela: com 125% de escala, ou
+        num notebook 1366x768, o ultimo campo some. Rolar e' o unico jeito que
+        nao depende de adivinhar o tamanho da tela do outro.
+        """
+        caixa = tk.Frame(pai, bg=SURF)
+        caixa.pack(fill="both", expand=True)
+        tela = tk.Canvas(caixa, bg=SURF, highlightthickness=0, borderwidth=0)
+        barra = ttk.Scrollbar(caixa, orient="vertical", command=tela.yview)
+        dentro = ttk.Frame(tela)
+        janela = tela.create_window((0, 0), window=dentro, anchor="nw")
+
+        def ajustar(_evt=None):
+            tela.configure(scrollregion=tela.bbox("all"))
+            tela.itemconfigure(janela, width=tela.winfo_width())
+
+        dentro.bind("<Configure>", ajustar)
+        tela.bind("<Configure>", ajustar)
+        tela.configure(yscrollcommand=barra.set)
+        tela.pack(side="left", fill="both", expand=True)
+        barra.pack(side="right", fill="y")
+
+        # Roda do mouse so' enquanto o ponteiro esta aqui: bind_all permanente
+        # roubaria a rolagem das tabelas das outras abas.
+        def roda(evt):
+            tela.yview_scroll(int(-1 * (evt.delta / 120)), "units")
+        tela.bind("<Enter>", lambda _e: tela.bind_all("<MouseWheel>", roda))
+        tela.bind("<Leave>", lambda _e: tela.unbind_all("<MouseWheel>"))
+        return dentro
+
     def _tabela(self, pai, colunas, larguras, elastica=-1, altura=None, expandir=True):
         q = tk.Frame(pai, bg=SURF, highlightbackground=HARD, highlightthickness=1)
         q.pack(fill="both", expand=expandir, padx=10, pady=10)
@@ -177,7 +227,7 @@ class Console(tk.Tk):
         self.tv_val = self._tabela(b, ("device", "variável", "valor"), (200, 300, 260), elastica=2)
 
         c = ttk.Frame(nb); nb.add(c, text="Cadastro")
-        self._aba_cadastro(c)
+        self._aba_cadastro(self._rolavel(c))
 
         d = ttk.Frame(nb); nb.add(d, text="Localizador")
         self._aba_localizador(d)
@@ -730,13 +780,37 @@ class Console(tk.Tk):
             filho.config(bg=fundo)
 
     def _ciclo_agora(self) -> None:
+        self._assinatura = None          # forca redesenho
         self._ciclo(uma_vez=True)
 
     def _ciclo(self, uma_vez: bool = False) -> None:
-        try:
-            d = self.ponte.dados()
-        except Exception as exc:
-            self.lb_rod.config(text=f"Falha ao ler o gateway: {exc}")
+        """Le em thread e desenha na principal.
+
+        Ler o banco e consultar o SCM na thread do Tk travava a janela numa
+        usina cheia; e redesenhar as tabelas a cada ciclo custava milhares de
+        insercoes por vez. Agora a leitura sai daqui e a tabela so' e' refeita
+        quando o conteudo muda de verdade.
+        """
+        def trabalho():
+            try:
+                d = self.ponte.dados()
+            except Exception as exc:
+                d = {"_erro": str(exc)}
+            self.after(0, lambda: self._pintar(d, uma_vez))
+
+        threading.Thread(target=trabalho, name="ler-gateway", daemon=True).start()
+
+    @staticmethod
+    def _assinar(d: dict) -> tuple:
+        """Resumo barato do que, se mudar, exige redesenhar as tabelas."""
+        devs = tuple((x.get("device_id"), x.get("quality"), x.get("sampled_at"))
+                     for x in (d.get("devices") or []))
+        ev = d.get("eventos") or []
+        return (devs, len(ev), (ev[0].get("created_at") if ev else None))
+
+    def _pintar(self, d: dict, uma_vez: bool = False) -> None:
+        if d.get("_erro"):
+            self.lb_rod.config(text="Falha ao ler o gateway: " + d["_erro"])
             if not uma_vez:
                 self.after(PERIODO_MS, self._ciclo)
             return
@@ -756,26 +830,32 @@ class Console(tk.Tk):
                         "p1" if d.get("fila_erro") else ("p2" if d.get("fila") else ""))
         self._pinta_cel(self.v_hora, d["hora"])
 
-        self.tv_dev.delete(*self.tv_dev.get_children())
-        for x in devs:
-            q = int(x.get("quality") or 0)
-            ok = q == 192
-            self.tv_dev.insert("", "end", tags=("" if ok else "ruim",), values=(
-                x["device_id"], "normal" if ok else "SEM COMUNICAÇÃO", q,
-                x["topic"], str(x.get("sampled_at") or "")[:19]))
+        # Tabela so' e' refeita quando o conteudo muda. Com 26 inversores, o
+        # redesenho cego custava milhares de insercoes a cada ciclo.
+        assinatura = self._assinar(d)
+        if assinatura != getattr(self, "_assinatura", None):
+            self._assinatura = assinatura
 
-        self.tv_val.delete(*self.tv_val.get_children())
-        for x in devs:
-            for chave, valor in list((x.get("valores") or {}).items())[:120]:
-                self.tv_val.insert("", "end", values=(x["device_id"], chave, valor))
+            self.tv_dev.delete(*self.tv_dev.get_children())
+            for x in devs:
+                q = int(x.get("quality") or 0)
+                ok = q == 192
+                self.tv_dev.insert("", "end", tags=("" if ok else "ruim",), values=(
+                    x["device_id"], "normal" if ok else "SEM COMUNICAÇÃO", q,
+                    x["topic"], str(x.get("sampled_at") or "")[:19]))
 
-        self.tv_ev.delete(*self.tv_ev.get_children())
-        for x in (d.get("eventos") or []):
-            nivel = str(x.get("level") or "")
-            tag = "ruim" if nivel == "ERROR" else ("aviso" if nivel == "WARNING" else "")
-            self.tv_ev.insert("", "end", tags=(tag,), values=(
-                str(x.get("created_at") or "")[:19], nivel, x.get("source"),
-                x.get("code"), x.get("message")))
+            self.tv_val.delete(*self.tv_val.get_children())
+            for x in devs:
+                for chave, valor in list((x.get("valores") or {}).items())[:120]:
+                    self.tv_val.insert("", "end", values=(x["device_id"], chave, valor))
+
+            self.tv_ev.delete(*self.tv_ev.get_children())
+            for x in (d.get("eventos") or []):
+                nivel = str(x.get("level") or "")
+                tag = "ruim" if nivel == "ERROR" else ("aviso" if nivel == "WARNING" else "")
+                self.tv_ev.insert("", "end", tags=(tag,), values=(
+                    str(x.get("created_at") or "")[:19], nivel, x.get("source"),
+                    x.get("code"), x.get("message")))
 
         self.b_aq.config(text="Parar aquisição" if d["aquisicao"] == "LIGADA" else "Ligar aquisição")
         if not devs and not self.tv_cad.get_children():
