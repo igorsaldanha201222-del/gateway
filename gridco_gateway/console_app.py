@@ -287,6 +287,132 @@ class Ponte:
                            "unit_id": unit, "index": indice},
                 "tipo": tipo_alvo}
 
+    # ---------- manutenção de templates já instalados ----------
+    @staticmethod
+    def _resumo_mudancas(antes_f: list, depois_f: list, antes_r: list, depois_r: list) -> dict:
+        chaves_a = {str(f.get("json_key")) for f in antes_f}
+        chaves_d = {str(f.get("json_key")) for f in depois_f}
+
+        def assinatura(f):
+            return (f.get("request_id"), f.get("register_offset"), f.get("bit_offset"),
+                    f.get("data_type"), f.get("gain"), f.get("offset"),
+                    f.get("word_order"), f.get("unit"), f.get("source_type"))
+
+        por_chave_a = {str(f.get("json_key")): assinatura(f) for f in antes_f}
+        alteradas = sorted(k for k in (chaves_a & chaves_d)
+                           if por_chave_a[k] != next(assinatura(f) for f in depois_f
+                                                     if str(f.get("json_key")) == k))
+        blocos_a = {(r.get("function_code"), r.get("address"), r.get("quantity")) for r in antes_r}
+        blocos_d = {(r.get("function_code"), r.get("address"), r.get("quantity")) for r in depois_r}
+        return {
+            "adicionadas": sorted(chaves_d - chaves_a),
+            "removidas": sorted(chaves_a - chaves_d),
+            "alteradas": alteradas,
+            "blocos_mudaram": blocos_a != blocos_d,
+            "blocos_antes": len(antes_r), "blocos_depois": len(depois_r),
+        }
+
+    def templates(self) -> dict:
+        """Compara cada modelo instalado nesta usina com o do catálogo."""
+        from .catalog import digest_da_config, digest_da_entrada
+        cfg = self._config()
+        try:
+            cat = self._catalogo()
+        except Exception as exc:
+            return {"ok": False, "erro": str(exc), "itens": []}
+
+        por_template: dict[str, list] = {}
+        for d in (cfg.get("devices") or []):
+            por_template.setdefault(str(d.get("template_id")), []).append(d)
+
+        itens = []
+        for tpl in (cfg.get("templates") or []):
+            tid = str(tpl.get("id"))
+            devices = por_template.get(tid, [])
+            meta = (devices[0].get("metadata") or {}) if devices else {}
+            catalog_id = str(meta.get("catalog_id") or "")
+            local = digest_da_config(cfg, tid)
+            gravado = meta.get("template_digest")
+
+            entrada = None
+            if catalog_id:
+                try:
+                    entrada = cat.detail(catalog_id)
+                except Exception:
+                    entrada = None
+
+            if entrada is None:
+                estado, mud = "sem_catalogo", {}
+            else:
+                do_catalogo = digest_da_entrada(entrada)
+                if local == do_catalogo:
+                    estado, mud = "atualizado", {}
+                elif gravado and local != gravado:
+                    # A copia daqui nao e' mais a que foi instalada: alguem
+                    # editou. Substituir descartaria essa edicao em silencio.
+                    estado = "editado_aqui"
+                    mud = self._resumo_mudancas(
+                        [f for f in (cfg.get("fields") or []) if str(f.get("template_id")) == tid],
+                        entrada["fields"],
+                        [r for r in (cfg.get("requests") or []) if str(r.get("template_id")) == tid],
+                        entrada["requests"])
+                else:
+                    estado = "desatualizado"
+                    mud = self._resumo_mudancas(
+                        [f for f in (cfg.get("fields") or []) if str(f.get("template_id")) == tid],
+                        entrada["fields"],
+                        [r for r in (cfg.get("requests") or []) if str(r.get("template_id")) == tid],
+                        entrada["requests"])
+                if not gravado and estado != "atualizado":
+                    # Cadastrado por uma versao que ainda nao gravava o digest:
+                    # da' para ver que difere, nao da' para saber de que lado.
+                    estado = "difere_origem_incerta"
+
+            itens.append({
+                "template_id": tid, "nome": tpl.get("name") or tid,
+                "catalog_id": catalog_id, "estado": estado,
+                "devices": [str(d.get("id")) for d in devices],
+                "mudancas": mud,
+            })
+        return {"ok": True, "itens": itens}
+
+    def atualizar_template(self, template_id: str) -> dict:
+        """Substitui o modelo instalado pelo do catálogo, versionando antes."""
+        from .config import ConfigurationManager
+        from .catalog import digest_da_entrada
+        try:
+            cfg = self._config()
+            tid = str(template_id)
+            devices = [d for d in (cfg.get("devices") or []) if str(d.get("template_id")) == tid]
+            if not devices:
+                return {"ok": False, "erro": "nenhum equipamento usa este modelo"}
+            catalog_id = str((devices[0].get("metadata") or {}).get("catalog_id") or "")
+            entrada = self._catalogo().detail(catalog_id)
+
+            # Troca template, blocos e variaveis por inteiro. Os devices so'
+            # apontam para template_id, entao continuam validos.
+            cfg["templates"] = [t for t in (cfg.get("templates") or []) if str(t.get("id")) != tid]
+            cfg["requests"] = [r for r in (cfg.get("requests") or []) if str(r.get("template_id")) != tid]
+            cfg["fields"] = [f for f in (cfg.get("fields") or []) if str(f.get("template_id")) != tid]
+            cfg["templates"].append(entrada["template"])
+            cfg["requests"].extend(entrada["requests"])
+            cfg["fields"].extend(entrada["fields"])
+
+            novo_digest = digest_da_entrada(entrada)
+            for d in cfg["devices"]:
+                if str(d.get("template_id")) == tid:
+                    d.setdefault("metadata", {})
+                    d["metadata"]["catalog_sha256"] = entrada.get("semantic_sha256")
+                    d["metadata"]["template_digest"] = novo_digest
+
+            gerenciador = ConfigurationManager(self.config_path, self.dir_dados / "config_versions")
+            gerenciador.load()
+            resultado = gerenciador.apply(cfg, origin="console:template")
+        except Exception as exc:
+            return {"ok": False, "erro": str(exc)}
+        return {"ok": True, "revisao": (resultado.get("configuration") or {}).get("revision"),
+                "devices": len(devices), "servico": self.reiniciar_servico()}
+
     def reiniciar_servico(self) -> str:
         try:
             import win32serviceutil

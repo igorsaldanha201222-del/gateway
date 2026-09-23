@@ -17,6 +17,36 @@ class CatalogError(ValueError):
     pass
 
 
+def digest_modelo(template: Any, requests: Any, fields: Any) -> str:
+    """Impressao digital do conteudo de um modelo.
+
+    Calculada aqui, e nao lida do catalogo: o campo ``semantic_sha256`` que vem
+    no arquivo foi produzido por outro processo e nao e' reproduzivel a partir
+    de template+requests+fields. Para comparar o que esta numa usina com o que
+    esta no catalogo, os dois lados precisam ser medidos pela mesma regua.
+    """
+    return hashlib.sha256(canonical_json({
+        "template": template, "requests": requests, "fields": fields,
+    }).encode("utf-8")).hexdigest()
+
+
+def digest_da_entrada(entry: dict[str, Any]) -> str:
+    return digest_modelo(entry.get("template"), entry.get("requests"), entry.get("fields"))
+
+
+def digest_da_config(config: dict[str, Any], template_id: str) -> str | None:
+    """Impressao digital da copia que esta na configuracao da usina."""
+    template = next((t for t in (config.get("templates") or [])
+                     if str(t.get("id")) == str(template_id)), None)
+    if template is None:
+        return None
+    requests = [r for r in (config.get("requests") or [])
+                if str(r.get("template_id")) == str(template_id)]
+    fields = [f for f in (config.get("fields") or [])
+              if str(f.get("template_id")) == str(template_id)]
+    return digest_modelo(template, requests, fields)
+
+
 class TemplateCatalog:
     def __init__(self, path: Path, overrides_path: Path | None = None):
         self.path = path
@@ -217,7 +247,13 @@ class TemplateCatalog:
         if not minimum <= unit_id <= maximum:
             raise CatalogError(f"Unit ID deve estar entre {minimum} e {maximum} para {transport}")
         device_type = str(template.get("device_type") or entry.get("device_type") or "device")
-        device_metadata = {"catalog_id": entry["catalog_id"], "catalog_sha256": entry["semantic_sha256"]}
+        device_metadata = {
+            "catalog_id": entry["catalog_id"],
+            "catalog_sha256": entry["semantic_sha256"],
+            # Medido por digest_modelo, que e' reproduzivel: e' o que permite
+            # depois distinguir "o catalogo mudou" de "alguem editou aqui".
+            "template_digest": digest_da_entrada(entry),
+        }
         if device_type.lower() == "inverter" and device_value.get("include_string_fields") is False:
             device_metadata["include_string_fields"] = False
             device_metadata["string_payload_mode"] = "independent"

@@ -179,6 +179,9 @@ class Console(tk.Tk):
         d = ttk.Frame(nb); nb.add(d, text="Localizador")
         self._aba_localizador(d)
 
+        f = ttk.Frame(nb); nb.add(f, text="Templates")
+        self._aba_templates(f)
+
         e = ttk.Frame(nb); nb.add(e, text="Eventos")
         self.tv_ev = self._tabela(e, ("quando", "nível", "origem", "código", "mensagem"),
                                   (150, 80, 110, 170, 420), elastica=4)
@@ -194,8 +197,11 @@ class Console(tk.Tk):
             nb.select(0)
 
     def _troca_aba(self, _evt=None) -> None:
-        if self._nb.tab(self._nb.select(), "text") == "Cadastro" and not self._modelos:
+        aba = self._nb.tab(self._nb.select(), "text")
+        if aba == "Cadastro" and not self._modelos:
             self._carregar_catalogo()
+        elif aba == "Templates":
+            self._carregar_templates()
 
     # ---------------- cadastro ----------------
     def _aba_cadastro(self, pai) -> None:
@@ -465,6 +471,121 @@ class Console(tk.Tk):
             self.b_loc_parar.config(state="disabled")
             return
         self._localizar_estado()
+
+    # ---------------- templates instalados ----------------
+    ROTULO_ESTADO = {
+        "atualizado": ("igual ao catálogo", ""),
+        "desatualizado": ("catálogo tem versão nova", "aviso"),
+        "editado_aqui": ("editado nesta usina", "ruim"),
+        "difere_origem_incerta": ("difere — origem incerta", "aviso"),
+        "sem_catalogo": ("sem modelo no catálogo", "ruim"),
+    }
+
+    def _aba_templates(self, pai) -> None:
+        topo = ttk.Labelframe(pai, text=" Modelos usados nesta usina ", padding=10)
+        topo.pack(fill="x", padx=10, pady=10)
+        acoes = ttk.Frame(topo); acoes.pack(fill="x")
+        ttk.Button(acoes, text="Reconferir", command=self._carregar_templates).pack(side="left")
+        self.b_tpl = ttk.Button(acoes, text="Atualizar pelo catálogo", style="Acao.TButton",
+                                command=self._atualizar_template, state="disabled")
+        self.b_tpl.pack(side="left", padx=6)
+        ttk.Label(acoes, text="Atualizar troca blocos e variáveis; os equipamentos "
+                              "cadastrados continuam apontando para o mesmo modelo."
+                  ).pack(side="left", padx=10)
+
+        self.tv_tpl = self._tabela(pai, ("modelo", "situação", "equipamentos", "catálogo"),
+                                   (280, 230, 260, 260), elastica=3, altura=8, expandir=False)
+        self.tv_tpl.bind("<<TreeviewSelect>>", lambda _e: self._detalhe_template())
+
+        self.lb_tpl = tk.Label(pai, text="Selecione um modelo.", bg=SURF2, fg=INK2,
+                               font=("Consolas", 8), justify="left", anchor="nw",
+                               padx=10, pady=10, highlightbackground=LINE, highlightthickness=1)
+        self.lb_tpl.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    def _carregar_templates(self) -> None:
+        r = self.ponte.templates()
+        self._tpl_itens = r.get("itens") or []
+        self.tv_tpl.delete(*self.tv_tpl.get_children())
+        if not r.get("ok"):
+            self.lb_tpl.config(text="Catálogo indisponível:\n" + str(r.get("erro")))
+            return
+        for i in self._tpl_itens:
+            rotulo, tag = self.ROTULO_ESTADO.get(i["estado"], (i["estado"], "aviso"))
+            self.tv_tpl.insert("", "end", tags=(tag,), values=(
+                i["nome"], rotulo,
+                f"{len(i['devices'])}: " + ", ".join(i["devices"][:3]) +
+                ("…" if len(i["devices"]) > 3 else ""),
+                i["catalog_id"] or "—"))
+        if not self._tpl_itens:
+            self.lb_tpl.config(text="Nenhum modelo instalado: a usina ainda não tem "
+                                    "equipamento cadastrado.")
+        self.b_tpl.config(state="disabled")
+
+    def _tpl_selecionado(self) -> dict | None:
+        sel = self.tv_tpl.selection()
+        if not sel:
+            return None
+        idx = self.tv_tpl.index(sel[0])
+        return self._tpl_itens[idx] if idx < len(self._tpl_itens) else None
+
+    def _detalhe_template(self) -> None:
+        i = self._tpl_selecionado()
+        if not i:
+            return
+        m = i.get("mudancas") or {}
+        linhas = [f"{i['nome']}", f"catálogo: {i['catalog_id'] or '—'}",
+                  f"equipamentos: {', '.join(i['devices']) or 'nenhum'}", ""]
+        if i["estado"] == "atualizado":
+            linhas.append("Igual ao catálogo. Nada a fazer.")
+        elif i["estado"] == "sem_catalogo":
+            linhas.append("Este modelo não existe no catálogo embarcado. Pode ter vindo\n"
+                          "de uma configuração antiga ou de um catálogo diferente.")
+        else:
+            if m.get("adicionadas"):
+                linhas.append(f"variáveis novas ({len(m['adicionadas'])}): "
+                              + ", ".join(m["adicionadas"][:12]))
+            if m.get("removidas"):
+                linhas.append(f"variáveis que somem ({len(m['removidas'])}): "
+                              + ", ".join(m["removidas"][:12]))
+            if m.get("alteradas"):
+                linhas.append(f"variáveis com endereço ou escala diferente "
+                              f"({len(m['alteradas'])}): " + ", ".join(m["alteradas"][:12]))
+            if m.get("blocos_mudaram"):
+                linhas.append(f"blocos de leitura mudam: {m.get('blocos_antes')} → "
+                              f"{m.get('blocos_depois')}")
+            if not any(m.get(k) for k in ("adicionadas", "removidas", "alteradas", "blocos_mudaram")):
+                linhas.append("Difere em algum detalhe que não aparece no resumo\n"
+                              "(nome, descrição ou metadado).")
+            linhas.append("")
+            if i["estado"] == "editado_aqui":
+                linhas.append("ATENÇÃO: esta cópia foi alterada nesta usina depois do cadastro.\n"
+                              "Atualizar descarta essa alteração.")
+            elif i["estado"] == "difere_origem_incerta":
+                linhas.append("Cadastrado por uma versão que ainda não gravava a impressão\n"
+                              "digital: dá para ver que difere, não de que lado veio a mudança.")
+            linhas.append("Variável que some deixa de ser publicada no MQTT.")
+        self.lb_tpl.config(text="\n".join(linhas))
+        self.b_tpl.config(state="disabled" if i["estado"] in ("atualizado", "sem_catalogo") else "normal")
+
+    def _atualizar_template(self) -> None:
+        i = self._tpl_selecionado()
+        if not i:
+            return
+        aviso = (f"Substituir o modelo '{i['nome']}' pelo do catálogo?\n\n"
+                 f"Afeta {len(i['devices'])} equipamento(s). A configuração atual é "
+                 f"versionada antes, e o serviço reinicia.")
+        if i["estado"] == "editado_aqui":
+            aviso += "\n\nEsta cópia foi editada nesta usina. A edição será PERDIDA."
+        if not messagebox.askyesno("Atualizar modelo", aviso):
+            return
+        r = self.ponte.atualizar_template(i["template_id"])
+        if r.get("ok"):
+            messagebox.showinfo("Atualizar modelo",
+                                f"Atualizado. Revisão {r.get('revisao')}, "
+                                f"{r.get('devices')} equipamento(s). Serviço {r.get('servico')}.")
+        else:
+            messagebox.showerror("Atualizar modelo", str(r.get("erro")))
+        self._carregar_templates()
 
     def _localizar_parar(self) -> None:
         self.ponte.localizar_parar()
