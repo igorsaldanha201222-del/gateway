@@ -31,20 +31,18 @@ datas += [(str(_gerar_build_info()), ".")]
 # junto com o binario. Sem arquivo solto para alguem esquecer de copiar.
 datas += [(str(RAIZ / "config" / "ca-gridco.crt"), ".")]
 
-# Certificado e chave da frota, tambem dentro do executavel: o gateway ja sai
-# de fabrica falando com o broker, sem importar nada em 200 usinas.
+# A chave privada da frota NAO entra aqui, e a diferenca importa.
 #
-# A chave nao esta no repositorio - vem de um secret do GitHub Actions, gravada
-# em config/ na hora do build. Rodando local, e o gerar-certificado-usina.ps1
-# que a coloca ali.
-for _nome in ("frota.crt", "frota.key"):
-    _arq = RAIZ / "config" / _nome
-    if _arq.is_file():
-        datas += [(str(_arq), ".")]
-    else:
-        raise SystemExit(
-            f"config/{_nome} ausente: o .exe sairia sem credencial e nenhuma usina "
-            f"conectaria. Gere com deploy/broker/gerar-certificado-usina.ps1 -Usina gateway.")
+# A CA acima e publica por definicao - existe para ser distribuida. Uma chave
+# privada dentro deste .exe seria outra coisa: o release e publico, e extrair
+# um arquivo de dentro de um executavel PyInstaller leva meia duzia de
+# comandos. Publicar o binario seria publicar a credencial da frota inteira, e
+# quem a tivesse publicaria telemetria no nome de qualquer usina e receberia o
+# comando de todas.
+#
+# O certificado da usina viaja no pacote de instalacao (preparar-usina.ps1) e
+# fica em ProgramData, numa pasta fechada para SYSTEM e Administradores. Ele
+# nao e tocado pelas atualizacoes: o .exe troca, a credencial fica.
 
 a = Analysis(
     [str(RAIZ / "deploy" / "windows" / "gateway_exe.py")],

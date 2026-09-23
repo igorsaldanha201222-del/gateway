@@ -34,8 +34,9 @@ deploy/broker/pacotes/
 *.pem
 !config/ca-gridco.crt
 
-# A chave da frota e embutida no .exe pelo build. No repositorio ela NAO entra:
-# quem a fornece e um secret do GitHub Actions. Ver .github/workflows.
+# Chave da frota: NUNCA no repositorio, que e publico. Ela viaja no pacote de
+# instalacao da usina e fica no ProgramData, com a pasta fechada para SYSTEM e
+# Administradores. Ver deploy/broker/preparar-usina.ps1.
 config/frota.key
 config/frota.crt
 
