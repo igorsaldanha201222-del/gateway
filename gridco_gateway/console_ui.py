@@ -235,8 +235,11 @@ class Console(tk.Tk):
         f = ttk.Frame(nb); nb.add(f, text="Templates")
         self._aba_templates(f)
 
-        g = ttk.Frame(nb); nb.add(g, text="Broker")
-        self._aba_broker(self._rolavel(g))
+        g = ttk.Frame(nb); nb.add(g, text="Usina")
+        self._aba_usina(self._rolavel(g))
+
+        h = ttk.Frame(nb); nb.add(h, text="Broker")
+        self._aba_broker(self._rolavel(h))
 
         e = ttk.Frame(nb); nb.add(e, text="Eventos")
         self.tv_ev = self._tabela(e, ("quando", "nível", "origem", "código", "mensagem"),
@@ -260,6 +263,8 @@ class Console(tk.Tk):
             self._carregar_templates()
         elif aba == "Broker":
             self._carregar_broker()
+        elif aba == "Usina":
+            self._carregar_usina()
 
     # ---------------- cadastro ----------------
     def _aba_cadastro(self, pai) -> None:
@@ -529,6 +534,84 @@ class Console(tk.Tk):
             self.b_loc_parar.config(state="disabled")
             return
         self._localizar_estado()
+
+    # ---------------- identidade da usina ----------------
+    def _aba_usina(self, pai) -> None:
+        f = ttk.Labelframe(pai, text=" Identificação desta usina ", padding=10)
+        f.pack(fill="x", padx=10, pady=10)
+
+        linha = ttk.Frame(f); linha.pack(fill="x")
+        ttk.Label(linha, text="Nome da usina").grid(row=0, column=0, sticky="w")
+        self.e_usina_nome = ttk.Entry(linha, width=38)
+        self.e_usina_nome.grid(row=1, column=0, sticky="we", padx=(0, 10))
+
+        ttk.Label(linha, text="Identificador (usado nos tópicos)").grid(row=0, column=1, sticky="w")
+        self.e_usina_slug = ttk.Entry(linha, width=28, font=MONO)
+        self.e_usina_slug.grid(row=1, column=1, sticky="we")
+        linha.columnconfigure(0, weight=3)
+        linha.columnconfigure(1, weight=2)
+
+        # Digitar o nome já sugere o identificador. Quem quiser, corrige.
+        self.e_usina_nome.bind("<KeyRelease>", self._sugerir_slug)
+
+        self.lb_usina_topico = tk.Label(f, text="", bg=SURF, fg=INK2, font=MONO,
+                                        anchor="w", justify="left")
+        self.lb_usina_topico.pack(fill="x", pady=(10, 0))
+
+        self.lb_usina_aviso = tk.Label(f, text="", bg=SURF, fg=P2, font=("Segoe UI", 8),
+                                       anchor="w", justify="left", wraplength=640)
+        self.lb_usina_aviso.pack(fill="x", pady=(6, 0))
+
+        acoes = ttk.Frame(f); acoes.pack(fill="x", pady=(10, 0))
+        self.b_usina = ttk.Button(acoes, text="Salvar", style="Acao.TButton",
+                                  command=self._salvar_usina)
+        self.b_usina.pack(side="left")
+        self.lb_usina_msg = tk.Label(acoes, text="", bg=SURF, fg=INK2, font=("Segoe UI", 8),
+                                     anchor="w", justify="left")
+        self.lb_usina_msg.pack(side="left", padx=10, fill="x", expand=True)
+
+    def _sugerir_slug(self, _evt=None) -> None:
+        # Só sugere enquanto ninguém editou o campo à mão: sobrescrever o que o
+        # operador digitou seria pior que não sugerir nada.
+        if getattr(self, "_slug_editado", False):
+            return
+        self.e_usina_slug.delete(0, "end")
+        self.e_usina_slug.insert(0, self.ponte._normalizar(self.e_usina_nome.get()))
+        self._previa_topico()
+
+    def _previa_topico(self) -> None:
+        slug = self.ponte._normalizar(self.e_usina_slug.get()) or "<identificador>"
+        self.lb_usina_topico.config(text=f"Os tópicos ficam assim:\n"
+                                         f"  dev/read/UFV/{slug}/inverter/1\n"
+                                         f"  dev/write/UFV/{slug}/+/+")
+
+    def _carregar_usina(self) -> None:
+        u = self.ponte.usina()
+        self._slug_editado = bool(u["slug"])
+        for campo, valor in ((self.e_usina_nome, u["nome"]), (self.e_usina_slug, u["slug"])):
+            campo.delete(0, "end")
+            campo.insert(0, valor)
+        self.e_usina_slug.bind("<KeyRelease>",
+                               lambda _e: (setattr(self, "_slug_editado", True), self._previa_topico()))
+        self._previa_topico()
+        if u["publicou"]:
+            self.lb_usina_aviso.config(
+                text="Esta usina já publicou telemetria. Trocar o identificador agora renomeia "
+                     "tudo do lado do servidor: o que já subiu fica no nome antigo, e o novo "
+                     "começa do zero. Só mude se for isso mesmo.")
+        else:
+            self.lb_usina_aviso.config(text="")
+
+    def _salvar_usina(self) -> None:
+        r = self.ponte.definir_usina(self.e_usina_nome.get(), self.e_usina_slug.get())
+        if not r.get("ok"):
+            self.lb_usina_msg.config(text=str(r.get("erro")), fg=P1)
+            return
+        self.e_usina_slug.delete(0, "end")
+        self.e_usina_slug.insert(0, r["slug"])
+        self._previa_topico()
+        self.lb_usina_msg.config(text=f"salvo · serviço {r.get('servico')}", fg=INK2)
+        self._ciclo_agora()
 
     # ---------------- broker: certificado da usina ----------------
     def _aba_broker(self, pai) -> None:

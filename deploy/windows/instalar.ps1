@@ -171,10 +171,14 @@ if ((Test-Path $certUsina) -and (Test-Path $chaveUsina)) {
     Write-Host "Certificado da usina instalado em $dirCred"
     if ($cn) { Write-Host "  CN do certificado : $cn" }
     Write-Host "  topico da usina   : $slug"
-    if ($cn -and $slug -and $cn -ne $slug) {
+    # CN "gateway" e o certificado unico da frota, autorizado em dev/read/UFV/#
+    # inteiro: nao ha o que conferir. O aviso vale para o arranjo de um
+    # certificado por usina, onde CN diferente do slug faz o broker descartar a
+    # publicacao calado.
+    if ($cn -and $slug -and $cn -ne $slug -and $cn -ne "gateway") {
         Write-Host ""
-        Write-Host "  ATENCAO: CN e topico diferentes. O broker vai descartar a telemetria"
-        Write-Host "  desta usina sem avisar. Corrija antes de sair de campo."
+        Write-Host "  ATENCAO: CN e topico diferentes. Se o broker separa por usina, ele vai"
+        Write-Host "  descartar a telemetria desta sem avisar. Corrija antes de sair de campo."
     }
 } else {
     Write-Host "Sem usina.crt/usina.key no pacote: o gateway nao vai conectar no broker."

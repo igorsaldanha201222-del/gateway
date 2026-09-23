@@ -421,6 +421,89 @@ class Ponte:
         except Exception as exc:
             return f"não reiniciou: {exc}"
 
+    # ---------- identidade da usina ----------
+    # O identificador entra em TODO tópico MQTT desta usina. Trocar depois de
+    # ela estar publicando renomeia tudo do lado do servidor, então a tela
+    # avisa antes em vez de deixar descobrir pelo dado sumindo.
+
+    def usina(self) -> dict:
+        cfg = self._config()
+        planta = cfg.get("plant") if isinstance(cfg.get("plant"), dict) else {}
+        slug = str((planta.get("metadata") or {}).get("topic_slug") or planta.get("id") or "")
+        return {
+            "nome": planta.get("name") or "",
+            "slug": slug,
+            "exemplo": f"dev/read/UFV/{slug or '<identificador>'}/inverter/1",
+            "publicou": self._ja_publicou(),
+        }
+
+    def _ja_publicou(self) -> bool:
+        """Se já saiu telemetria, trocar o identificador parte a série histórica."""
+        if not self.banco.exists():
+            return False
+        try:
+            con = sqlite3.connect(f"file:{self.banco.as_posix()}?mode=ro", uri=True, timeout=2.0)
+        except sqlite3.Error:
+            return False
+        try:
+            for tabela in ("outbox_sent", "outbox"):
+                try:
+                    if con.execute(f"select 1 from {tabela} limit 1").fetchone():
+                        return True
+                except sqlite3.Error:
+                    continue
+        finally:
+            con.close()
+        return False
+
+    @staticmethod
+    def _normalizar(texto: str) -> str:
+        """'UFV Pedra Branca' -> 'pedra_branca'. Sem acento, sem espaço."""
+        import re
+        import unicodedata
+        sem_acento = "".join(
+            c for c in unicodedata.normalize("NFD", str(texto or ""))
+            if unicodedata.category(c) != "Mn")
+        s = re.sub(r"[^a-z0-9]+", "_", sem_acento.lower()).strip("_")
+        return re.sub(r"_+", "_", s)
+
+    def definir_usina(self, nome: str, slug: str) -> dict:
+        from .config import ConfigurationManager
+        import re
+
+        nome = str(nome or "").strip()
+        slug = self._normalizar(slug or nome)
+        if not nome:
+            return {"ok": False, "erro": "informe o nome da usina"}
+        if not slug:
+            return {"ok": False, "erro": "o identificador ficou vazio"}
+        if not re.fullmatch(r"[a-z0-9_]{2,40}", slug):
+            return {"ok": False, "erro": f"identificador inválido: '{slug}'"}
+
+        try:
+            cfg = self._config()
+            planta = cfg.setdefault("plant", {})
+            planta["id"] = slug
+            planta["name"] = nome
+            planta.setdefault("metadata", {})["topic_slug"] = slug
+
+            geral = cfg.setdefault("general", {})
+            geral["plant_id"] = slug
+            # Os tópicos de comando trazem o slug embutido; deixá-los para trás
+            # faria a usina escutar o canal de outra.
+            geral["command_subscribe_filter"] = f"dev/write/UFV/{slug}/+/+"
+            geral["command_feedback_topic"] = f"dev/write/UFV/{slug}/feedback"
+            geral["v3_configuration_topic"] = f"dev/write/UFV/{slug}/gateway/configuration/v3/set"
+            geral["v3_status_topic"] = f"dev/read/UFV/{slug}/gateway/status"
+            cfg.setdefault("mqtt", {})["client_id"] = f"GRIDCO-{slug.upper()}"
+
+            gerenciador = ConfigurationManager(self.config_path, self.dir_dados / "config_versions")
+            gerenciador.load()
+            gerenciador.apply(cfg, origin="console")
+        except Exception as exc:
+            return {"ok": False, "erro": str(exc)}
+        return {"ok": True, "slug": slug, "servico": self.reiniciar_servico()}
+
     # ---------- credencial do broker (mTLS) ----------
     # O certificado da usina é a credencial: o CN dele vira o usuário no broker.
     # Não há senha para digitar, guardar ou trocar em 200 PCs. É o mesmo modelo
@@ -523,15 +606,19 @@ class Ponte:
         if info.get("cn", "").startswith("ilegível"):
             return {"ok": False, "erro": info["cn"]}
 
-        # O CN é o usuário no broker e a ACL prende cada usina ao próprio ramo
-        # do tópico. CN diferente do topic_slug = publicação negada na usina.
+        # O CN vira o usuário no broker. Hoje a frota usa um certificado só,
+        # CN "gateway", e a ACL o autoriza em dev/read/UFV/# inteiro — nesse
+        # caso não há nada a conferir. O aviso existe para o outro arranjo, um
+        # certificado por usina com "pattern ... %u", onde CN diferente do
+        # topic_slug faz o broker descartar a publicação sem avisar ninguém.
         cfg = self._config()
         slug = str(((cfg.get("plant") or {}).get("metadata") or {}).get("topic_slug")
                    or (cfg.get("plant") or {}).get("id") or "")
         aviso = ""
-        if slug and info.get("cn") != slug:
-            aviso = (f"CN do certificado é '{info['cn']}' e o tópico desta usina é "
-                     f"'{slug}'. O broker vai negar a publicação.")
+        cn = info.get("cn", "")
+        if slug and cn not in (slug, "gateway"):
+            aviso = (f"CN do certificado é '{cn}' e o tópico desta usina é '{slug}'. "
+                     f"Se o broker separa por usina, ele vai descartar a publicação.")
 
         destino = self.dir_credenciais
         try:
