@@ -120,6 +120,46 @@ function Atualizar-Console {
     }
 }
 
+function Atualizar-A-Si-Mesmo {
+    <#
+      Troca o proprio atualizar.ps1 pelo do release. Sem isso, melhoria neste
+      script exigiria levar arquivo a mao ate cada usina - o oposto do que a
+      atualizacao automatica existe para resolver.
+
+      Roda por ULTIMO: o PowerShell ja leu este arquivo, entao a troca so vale
+      da proxima execucao - que e' exatamente o desejado.
+    #>
+    param($Release, $Cabecalhos)
+    $eu = $PSCommandPath
+    if (-not $eu -or -not (Test-Path $eu)) { return }
+
+    $aS = $Release.assets | Where-Object { $_.name -eq "atualizar.ps1" }
+    $sS = $Release.assets | Where-Object { $_.name -eq "atualizar.ps1.sha256" }
+    if (-not $aS -or -not $sS) { return }   # release antigo, sem o script
+
+    $ts = Join-Path $env:TEMP ("gridco-s-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $ts | Out-Null
+    try {
+        $arqSha = Join-Path $ts "atualizar.ps1.sha256"
+        Invoke-WebRequest -Uri $sS.url -Headers $Cabecalhos -OutFile $arqSha
+        $esp = ((Get-Content $arqSha -Raw) -split '\s+')[0].Trim().ToLower()
+        if ((Get-FileHash $eu -Algorithm SHA256).Hash.ToLower() -eq $esp) { return }
+
+        $novo = Join-Path $ts "atualizar.ps1"
+        Invoke-WebRequest -Uri $aS.url -Headers $Cabecalhos -OutFile $novo
+        if ((Get-FileHash $novo -Algorithm SHA256).Hash.ToLower() -ne $esp) {
+            Registrar "SHA-256 do atualizador nao confere; mantido o atual." "AVISO"
+            return
+        }
+        Copy-Item $novo $eu -Force
+        Registrar "Atualizador substituido; vale da proxima execucao."
+    } catch {
+        Registrar "Atualizador nao trocado: $($_.Exception.Message)" "AVISO"
+    } finally {
+        Remove-Item $ts -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Confirmar-Saude {
     <#
       Sobe o servico e observa. Nao basta o SCM dizer "Running": um binario
@@ -200,6 +240,7 @@ if ($publicada -eq $instalada -and -not $Forcar) {
     # O console e' binario separado e pode estar atrasado mesmo com o servico
     # em dia - por exemplo se estava aberto na janela anterior.
     Atualizar-Console $release $baixar
+    Atualizar-A-Si-Mesmo $release $baixar
     exit 0
 }
 
@@ -253,6 +294,7 @@ if (Confirmar-Saude $SegundosParaConfirmar) {
     $agora = try { (& $alvo --version).Trim() } catch { "?" }
     Registrar "ATUALIZADO para $agora. Anterior em $backup."
     Atualizar-Console $release $baixar
+    Atualizar-A-Si-Mesmo $release $baixar
     exit 0
 }
 

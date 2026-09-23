@@ -56,9 +56,15 @@ jobs:
           ./dist/gridco-gateway.exe --version
           ./dist/gridco-gateway.exe --config config/gateway.json --validate
 
+      # O proprio atualizador vai no release: sem isso, melhoria no script de
+      # atualizacao exigiria levar arquivo a mao ate cada usina - justamente o
+      # que a atualizacao automatica existe para evitar.
+      - name: Publicar o atualizador junto
+        run: Copy-Item deploy/windows/atualizar.ps1 dist/atualizar.ps1 -Force
+
       - name: Somas de verificacao
         run: |
-          foreach ($nome in @("gridco-gateway.exe", "gridco-console.exe")) {
+          foreach ($nome in @("gridco-gateway.exe", "gridco-console.exe", "atualizar.ps1")) {
             $h = (Get-FileHash "dist/$nome" -Algorithm SHA256).Hash.ToLower()
             "$h  $nome" | Out-File -FilePath "dist/$nome.sha256" -Encoding ascii
             Write-Host "$nome  $h"
@@ -72,6 +78,8 @@ jobs:
             dist/gridco-gateway.exe.sha256
             dist/gridco-console.exe
             dist/gridco-console.exe.sha256
+            dist/atualizar.ps1
+            dist/atualizar.ps1.sha256
 
       - name: Publicar no release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -82,3 +90,5 @@ jobs:
             dist/gridco-gateway.exe.sha256
             dist/gridco-console.exe
             dist/gridco-console.exe.sha256
+            dist/atualizar.ps1
+            dist/atualizar.ps1.sha256
