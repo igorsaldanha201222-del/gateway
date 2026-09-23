@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gridco.local/schemas/gateway-v1.json",
+  "title": "Grid Co Gateway",
+  "type": "object",
+  "required": ["schema_version", "configuration_id", "plant", "general", "channels", "templates", "requests", "fields", "devices", "topics"],
+  "properties": {
+    "schema_version": {"type": "string", "pattern": "^1\\."},
+    "configuration_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "revision": {"type": "integer", "minimum": 0},
+    "plant": {
+      "type": "object",
+      "required": ["id", "name", "timezone"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"type": "string"},
+        "timezone": {"type": "string"},
+        "metadata": {"type": "object"}
+      },
+      "additionalProperties": true
+    },
+    "general": {"type": "object"},
+    "runtime": {"type": "object"},
+    "mqtt": {"type": "object"},
+    "storage": {"type": "object"},
+    "web": {"type": "object"},
+    "channels": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/channel"}},
+    "templates": {"type": "array", "maxItems": 256, "items": {"$ref": "#/$defs/identified"}},
+    "requests": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/request"}},
+    "fields": {"type": "array", "maxItems": 16384, "items": {"$ref": "#/$defs/field"}},
+    "devices": {"type": "array", "maxItems": 1024, "items": {"$ref": "#/$defs/device"}},
+    "topics": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/topic"}},
+    "commands": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/identified"}},
+    "alarms": {"type": "array"},
+    "events": {"type": "array"},
+    "sequences": {"type": "array"},
+    "pid": {"type": "array"},
+    "auto_reclosing": {"type": "object"}
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,96}$"},
+    "identified": {"type": "object", "required": ["id"], "properties": {"id": {"$ref": "#/$defs/id"}}, "additionalProperties": true},
+    "channel": {
+      "allOf": [{"$ref": "#/$defs/identified"}],
+      "properties": {"transport": {"enum": ["tcp", "ethernet", "rtu", "serial"]}, "serial_device": {"type": "string"}},
+      "required": ["id", "transport"]
+    },
+    "request": {
+      "allOf": [{"$ref": "#/$defs/identified"}],
+      "properties": {"template_id": {"$ref": "#/$defs/id"}, "function_code": {"enum": [1, 2, 3, 4]}, "address": {"type": "integer", "minimum": 0, "maximum": 65535}, "quantity": {"type": "integer", "minimum": 1, "maximum": 2000}},
+      "required": ["id", "template_id", "function_code", "address", "quantity"]
+    },
+    "field": {
+      "allOf": [{"$ref": "#/$defs/identified"}],
+      "properties": {"template_id": {"$ref": "#/$defs/id"}, "json_key": {"type": "string", "minLength": 1}, "source_type": {"enum": ["modbus", "static", "timestamp", "quality", "derived", "linked", "linked_stringbox", "linked_string_box", "related", "cache"]}},
+      "required": ["id", "template_id", "json_key"]
+    },
+    "device": {
+      "allOf": [{"$ref": "#/$defs/identified"}],
+      "properties": {"channel_id": {"$ref": "#/$defs/id"}, "template_id": {"$ref": "#/$defs/id"}, "unit_id": {"type": "integer", "minimum": 0, "maximum": 247}},
+      "required": ["id", "channel_id", "template_id", "unit_id"]
+    },
+    "topic": {
+      "allOf": [{"$ref": "#/$defs/identified"}],
+      "properties": {"device_id": {"$ref": "#/$defs/id"}, "topic": {"type": "string", "minLength": 1}, "qos": {"enum": [0, 1]}},
+      "required": ["id", "device_id", "purpose", "topic"]
+    }
+  }
+}
+

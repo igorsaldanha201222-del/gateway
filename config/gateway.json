@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0.0",
+  "configuration_id": "gridco-v1-inicial",
+  "revision": 1,
+  "plant": {
+    "id": "gateway_generico",
+    "name": "Gateway Generico Grid Co",
+    "company": "Grid Co",
+    "timezone": "America/Sao_Paulo",
+    "metadata": {
+      "complex": "UFV",
+      "topic_slug": "gateway_generico"
+    }
+  },
+  "general": {
+    "gateway_id": "GRIDCO-GW-01",
+    "plant_id": "gateway_generico",
+    "default_qos": 1,
+    "default_retain": false,
+    "auto_generate_topics": true,
+    "telemetry_topic_pattern": "dev/read/UFV/{plant}/{type}/{id}",
+    "command_subscribe_filter": "dev/write/UFV/gateway_generico/+/+",
+    "command_feedback_topic": "dev/write/UFV/gateway_generico/feedback",
+    "v3_configuration_topic": "dev/write/UFV/gateway_generico/gateway/configuration/v3/set",
+    "v3_status_topic": "dev/read/UFV/gateway_generico/gateway/status"
+  },
+  "runtime": {
+    "enabled": false,
+    "allow_remote_configuration": false,
+    "worker_watchdog_seconds": 30,
+    "shutdown_timeout_seconds": 15,
+    "log_level": "INFO"
+  },
+  "mqtt": {
+    "enabled": true,
+    "host": "app.gridco.com.br",
+    "port": 8883,
+    "client_id": "GRIDCO-GW-01",
+    "keepalive_seconds": 45,
+    "connect_timeout_seconds": 10,
+    "ack_timeout_seconds": 15,
+    "reconnect_min_seconds": 1,
+    "reconnect_max_seconds": 60,
+    "username_env": "GRIDCO_MQTT_USERNAME",
+    "password_env": "GRIDCO_MQTT_PASSWORD",
+    "username_credential": "mqtt-username",
+    "password_credential": "mqtt-password",
+    "tls": {
+      "enabled": true,
+      "ca_file": "",
+      "cert_file": "",
+      "key_file": "",
+      "server_hostname": "app.gridco.com.br",
+      "insecure": false
+    }
+  },
+  "storage": {
+    "database": "gateway.db",
+    "max_buffer_messages": 100000,
+    "retention_days": 30,
+    "replay_interval_ms": 250,
+    "replay_batch_size": 25,
+    "max_attempts": 0,
+    "event_retention_days": 30
+  },
+  "channels": [],
+  "templates": [],
+  "requests": [],
+  "fields": [],
+  "devices": [],
+  "topics": [],
+  "commands": [],
+  "alarms": [],
+  "events": [],
+  "sequences": [],
+  "pid": [],
+  "auto_reclosing": {
+    "enabled": false
+  }
+}

@@ -1,0 +1,84 @@
+# Gera os executaveis e publica no release.
+#
+# Dispara ao empurrar uma tag v* (ex.: git tag v1.0.0 && git push origin v1.0.0),
+# ou manualmente pela aba Actions.
+#
+# O atualizar.ps1 do PC da usina consome gridco-gateway.exe e o .sha256 daqui.
+# Sem o .sha256 ele se recusa a trocar o binario.
+
+name: build-windows
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # O gateway em si e' so' biblioteca padrao. As dependencias abaixo sao de
+      # empacotamento: pyinstaller; tzdata porque o Windows nao tem base de
+      # fusos do sistema; pywin32 para o servico falar com o SCM.
+      - name: Dependencias de build
+        run: python -m pip install --upgrade pip pyinstaller tzdata pywin32
+
+      - name: Testes
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m unittest discover -s tests
+
+      - name: Validar a configuracao base
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m gridco_gateway --config config/gateway.json --validate
+
+      - name: Empacotar o servico
+        run: python -m PyInstaller deploy/windows/gridco-gateway.spec --noconfirm --clean --distpath dist --workpath build/pyinstaller
+
+      - name: Empacotar o console
+        run: python -m PyInstaller deploy/windows/gridco-console.spec --noconfirm --clean --distpath dist --workpath build/pyinstaller
+
+      # Prova de vida fora do ambiente Python: se o binario nao validar a
+      # configuracao, nao adianta publicar.
+      - name: Conferir o servico
+        run: |
+          ./dist/gridco-gateway.exe --version
+          ./dist/gridco-gateway.exe --config config/gateway.json --validate
+
+      - name: Somas de verificacao
+        run: |
+          foreach ($nome in @("gridco-gateway.exe", "gridco-console.exe")) {
+            $h = (Get-FileHash "dist/$nome" -Algorithm SHA256).Hash.ToLower()
+            "$h  $nome" | Out-File -FilePath "dist/$nome.sha256" -Encoding ascii
+            Write-Host "$nome  $h"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gridco-windows
+          path: |
+            dist/gridco-gateway.exe
+            dist/gridco-gateway.exe.sha256
+            dist/gridco-console.exe
+            dist/gridco-console.exe.sha256
+
+      - name: Publicar no release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/gridco-gateway.exe
+            dist/gridco-gateway.exe.sha256
+            dist/gridco-console.exe
+            dist/gridco-console.exe.sha256

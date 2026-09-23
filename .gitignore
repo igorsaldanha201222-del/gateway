@@ -1,0 +1,24 @@
+# Saida de build e empacotamento
+dist/
+build/
+entrega/
+*.zip
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Estado de execucao - e' da instalacao, nao do codigo
+data/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# Backups gerados por script
+*.bak
+*.tmp
+
+# Sistema
+Thumbs.db
+desktop.ini
+.DS_Store
