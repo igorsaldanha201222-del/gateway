@@ -657,6 +657,145 @@ class Ponte:
             "validade": info.get("notAfter", "?"),
         }
 
+    def definir_broker(self, host: str, porta) -> dict:
+        """Endereço do broker, editável em campo.
+
+        Sem isto, corrigir um PC que ficou apontando para o broker antigo
+        exigia reinstalar — o ATUALIZAR só troca o binário, nunca a
+        configuração. A CA embutida entra junto: ``ca_file`` vazio faz o Python
+        usar o depósito do Windows, que não conhece a CA da Grid Co, e o erro
+        que aparece é "certificado inválido", sem dizer o porquê.
+        """
+        from .config import ConfigurationManager
+        host = str(host or "").strip()
+        if not host:
+            return {"ok": False, "erro": "informe o endereço do broker"}
+        try:
+            porta = int(porta)
+        except (TypeError, ValueError):
+            return {"ok": False, "erro": "porta inválida"}
+        if not 1 <= porta <= 65535:
+            return {"ok": False, "erro": "porta fora de 1..65535"}
+        # 1883 é MQTT em texto claro: telemetria legível no caminho e, pior, o
+        # canal de comando aberto para quem estiver na rota. Não é uma opção
+        # que se deixa a um clique de distância numa tela de operação.
+        if porta == 1883:
+            return {"ok": False, "erro": "a porta 1883 é sem criptografia e não é permitida. "
+                                         "Use 8883."}
+        try:
+            cfg = self._config()
+            mqtt = cfg.setdefault("mqtt", {})
+            mqtt["host"] = host
+            mqtt["port"] = porta
+            tls = mqtt.setdefault("tls", {})
+            tls["enabled"] = True
+            tls["server_hostname"] = host
+            if not str(tls.get("ca_file") or ""):
+                tls["ca_file"] = "embutido:ca-gridco.crt"
+            gerenciador = ConfigurationManager(self.config_path, self.dir_dados / "config_versions")
+            gerenciador.load()
+            gerenciador.apply(cfg, origin="console")
+        except Exception as exc:
+            return {"ok": False, "erro": str(exc)}
+        return {"ok": True, "servico": self.reiniciar_servico()}
+
+    def testar_broker(self) -> dict:
+        """Tenta conectar agora, com a configuração instalada, e diz onde parou.
+
+        Uma camada por vez: TCP, TLS, CA, certificado de cliente, CONNACK. Sem
+        isto o que o operador vê é "não conecta", e as cinco causas possíveis
+        têm conserto diferente.
+        """
+        import socket
+        import ssl
+        from .mqtt import MQTTConnection, MQTTError
+
+        cfg = self._config()
+        mqtt = dict(cfg.get("mqtt") or {})
+        host = str(mqtt.get("host", ""))
+        porta = int(mqtt.get("port", 1883) or 1883)
+        passos: list[dict] = []
+
+        def passo(nome, ok, detalhe=""):
+            passos.append({"passo": nome, "ok": ok, "detalhe": str(detalhe)[:300]})
+            return ok
+
+        try:
+            s = socket.create_connection((host, porta), timeout=8)
+            s.close()
+            passo("Rede", True, f"{host}:{porta} respondeu")
+        except OSError as exc:
+            passo("Rede", False, f"{exc}. Porta fechada, firewall ou endereço errado.")
+            return {"passos": passos}
+
+        tls = mqtt.get("tls") or {}
+        if tls.get("enabled"):
+            try:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                with ctx.wrap_socket(socket.create_connection((host, porta), timeout=8),
+                                     server_hostname=host) as t:
+                    passo("TLS", True, t.version())
+            except Exception as exc:
+                passo("TLS", False, f"{type(exc).__name__}: {exc}. A porta atende mas não fala TLS.")
+                return {"passos": passos}
+
+        # Daqui em diante usa o cliente de verdade, com a mesma configuração do
+        # serviço: é o único jeito de o teste valer pelo que o serviço faz.
+        tem_cert = bool(str(tls.get("cert_file") or ""))
+        mqtt["client_id"] = str(mqtt.get("client_id", "gridco")) + "-teste"
+        try:
+            conexao = MQTTConnection(mqtt, self.config_path.parent, lambda t, p: None)
+            conexao.connect()
+            conexao.close()
+            passo("Certificado e login", True, "o broker aceitou")
+            passo("MQTT", True, "CONNACK 0 — conectado")
+        except ssl.SSLCertVerificationError as exc:
+            passo("Certificado e login", False,
+                  f"{exc.verify_message}. O certificado do broker não foi assinado pela CA "
+                  f"da Grid Co, ou ca_file está vazio.")
+        except ssl.SSLError as exc:
+            # "certificate required" é o broker dizendo que exige mTLS. Chamar
+            # isso de "certificado recusado" manda procurar defeito num arquivo
+            # que talvez nem exista.
+            if "CERTIFICATE_REQUIRED" in str(exc).upper() or not tem_cert:
+                passo("Certificado e login", False,
+                      "o broker exige certificado de cliente e "
+                      + ("não aceitou o desta usina."
+                         if tem_cert else
+                         "esta usina não tem um instalado. Importe abaixo, ou reinstale "
+                         "pelo pacote da usina.")
+                      + f" ({exc})")
+            else:
+                passo("Certificado e login", False,
+                      f"{exc}. O broker recusou o certificado desta usina.")
+        except ConnectionResetError:
+            # O TLS 1.3 manda o certificado do cliente DEPOIS do handshake, então
+            # a recusa não chega como erro de TLS: chega como a conexão morrendo
+            # no primeiro uso. Sem esta tradução, o que aparece na usina é
+            # "WinError 10054", que não aponta para lugar nenhum.
+            passo("Certificado e login", False,
+                  "o broker fechou a conexão. É o que ele faz quando exige certificado de "
+                  "cliente e não recebe um válido."
+                  + ("" if tem_cert else " Esta usina não tem certificado instalado — "
+                                         "importe abaixo, ou reinstale pelo pacote da usina."))
+        except FileNotFoundError as exc:
+            passo("Certificado e login", False,
+                  f"arquivo não encontrado: {exc.filename or exc}. O caminho do certificado "
+                  f"aponta para algo que não existe neste PC.")
+        except PermissionError as exc:
+            passo("Certificado e login", False,
+                  f"sem permissão para ler {exc.filename or 'o certificado'}. A pasta de "
+                  f"credenciais é fechada para SYSTEM e Administradores — abra o console "
+                  f"como administrador.")
+        except MQTTError as exc:
+            passo("Certificado e login", True, "TLS fechou")
+            passo("MQTT", False, str(exc))
+        except Exception as exc:
+            passo("Certificado e login", False, f"{type(exc).__name__}: {exc}")
+        return {"passos": passos}
+
     def broker_instalar(self, cert_pem: str, key_pem: str) -> dict:
         """Valida e instala o par da usina, e só então aponta a configuração.
 

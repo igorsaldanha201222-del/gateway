@@ -643,9 +643,28 @@ class Console(tk.Tk):
     def _aba_broker(self, pai) -> None:
         estado = ttk.Labelframe(pai, text=" Ligação com o servidor ", padding=10)
         estado.pack(fill="x", padx=10, pady=10)
+
+        # Editável: o ATUALIZAR só troca o binário, nunca a configuração. Um PC
+        # que ficou apontando para o broker antigo precisava ser reinstalado.
+        linha = ttk.Frame(estado); linha.pack(fill="x")
+        ttk.Label(linha, text="Endereço do broker").grid(row=0, column=0, sticky="w")
+        self.e_brk_host = ttk.Entry(linha, width=34, font=MONO)
+        self.e_brk_host.grid(row=1, column=0, sticky="we", padx=(0, 10))
+        ttk.Label(linha, text="Porta").grid(row=0, column=1, sticky="w")
+        self.e_brk_porta = ttk.Entry(linha, width=8, font=MONO)
+        self.e_brk_porta.grid(row=1, column=1, sticky="w", padx=(0, 10))
+        ttk.Button(linha, text="Salvar endereço", command=self._salvar_broker).grid(row=1, column=2)
+        ttk.Button(linha, text="Testar conexão", style="Acao.TButton",
+                   command=self._testar_broker).grid(row=1, column=3, padx=6)
+        linha.columnconfigure(0, weight=1)
+
         self.lb_brk = tk.Label(estado, text="—", bg=SURF, fg=INK, font=MONO,
                                anchor="w", justify="left")
-        self.lb_brk.pack(fill="x")
+        self.lb_brk.pack(fill="x", pady=(10, 0))
+
+        self.lb_brk_teste = tk.Label(estado, text="", bg=SURF, fg=INK2, font=MONO,
+                                     anchor="w", justify="left", wraplength=880)
+        self.lb_brk_teste.pack(fill="x", pady=(8, 0))
 
         form = ttk.Labelframe(pai, text=" Certificado desta usina ", padding=10)
         form.pack(fill="both", expand=True, padx=10, pady=(0, 10))
@@ -695,8 +714,41 @@ class Console(tk.Tk):
         self._pem[chave].delete("1.0", "end")
         self._pem[chave].insert("1.0", texto)
 
+    def _salvar_broker(self) -> None:
+        r = self.ponte.definir_broker(self.e_brk_host.get(), self.e_brk_porta.get())
+        if not r.get("ok"):
+            self.lb_brk_msg.config(text=str(r.get("erro")), fg=P1)
+            return
+        self.lb_brk_msg.config(text=f"endereço salvo · serviço {r.get('servico')}", fg=INK2)
+        self._carregar_broker()
+
+    def _testar_broker(self) -> None:
+        # Em thread: cada camada tem timeout de 8 s, e cinco delas seguradas na
+        # thread do Tk deixariam a janela branca.
+        self.lb_brk_teste.config(text="testando…", fg=INK2)
+
+        def trabalho():
+            r = self.ponte.testar_broker()
+            self.after(0, lambda: self._pintar_teste(r))
+
+        threading.Thread(target=trabalho, name="testar-broker", daemon=True).start()
+
+    def _pintar_teste(self, r: dict) -> None:
+        passos = r.get("passos") or []
+        linhas = []
+        falhou = False
+        for p in passos:
+            marca = "OK   " if p["ok"] else "FALHA"
+            linhas.append(f"  {marca}  {p['passo']:<22} {p['detalhe']}")
+            falhou = falhou or not p["ok"]
+        self.lb_brk_teste.config(text="\n".join(linhas) or "sem resultado",
+                                 fg=P1 if falhou else INK)
+
     def _carregar_broker(self) -> None:
         e = self.ponte.broker_estado()
+        for campo, valor in ((self.e_brk_host, e.get("host")), (self.e_brk_porta, e.get("porta"))):
+            campo.delete(0, "end")
+            campo.insert(0, str(valor))
         linhas = [
             f"Servidor    {e.get('host')}:{e.get('porta')}"
             + ("   TLS ligado" if e.get("tls") else "   TLS DESLIGADO"),
