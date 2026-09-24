@@ -167,20 +167,112 @@ class Ponte:
                 "servico": reinicio}
 
     def remover(self, device_id: str) -> dict:
+        """Remove o equipamento e tudo que só existia por causa dele.
+
+        Tirar apenas o device e os tópicos deixava ``commands`` e ``sequences``
+        apontando para um id que não existe mais. A validação recusa referência
+        órfã, então a configuração inteira passava a ser rejeitada — e o sintoma
+        não era "faltou limpar", era "não consigo mais cadastrar nada".
+
+        Template e canal são compartilhados: só saem quando ficam sem nenhum
+        device. Templates órfãos não quebram validação, mas enchem a aba
+        Templates de modelo que ninguém usa.
+        """
         from .config import ConfigurationManager
         try:
             cfg = self._config()
-            antes = len(cfg.get("devices") or [])
-            cfg["devices"] = [d for d in (cfg.get("devices") or []) if str(d.get("id")) != str(device_id)]
-            cfg["topics"] = [t for t in (cfg.get("topics") or []) if str(t.get("device_id")) != str(device_id)]
-            if len(cfg["devices"]) == antes:
+            alvo = str(device_id)
+            devices = cfg.get("devices") or []
+            device = next((d for d in devices if str(d.get("id")) == alvo), None)
+            if device is None:
                 return {"ok": False, "erro": "equipamento não encontrado"}
+
+            cfg["devices"] = [d for d in devices if str(d.get("id")) != alvo]
+            removido = {"tópicos": 0, "comandos": 0, "sequências": 0}
+            for secao, rotulo in (("topics", "tópicos"), ("commands", "comandos"),
+                                  ("sequences", "sequências")):
+                antes = cfg.get(secao) or []
+                depois = [x for x in antes if str(x.get("device_id")) != alvo]
+                removido[rotulo] = len(antes) - len(depois)
+                cfg[secao] = depois
+
+            # Só some se mais ninguém usa.
+            template_id = str(device.get("template_id", ""))
+            canal_id = str(device.get("channel_id", ""))
+            usa_template = any(str(d.get("template_id")) == template_id for d in cfg["devices"])
+            usa_canal = any(str(d.get("channel_id")) == canal_id for d in cfg["devices"])
+
+            if template_id and not usa_template:
+                cfg["templates"] = [t for t in (cfg.get("templates") or [])
+                                    if str(t.get("id")) != template_id]
+                # requests e fields pertencem ao template, não ao device.
+                for secao in ("requests", "fields"):
+                    cfg[secao] = [x for x in (cfg.get(secao) or [])
+                                  if str(x.get("template_id")) != template_id]
+                removido["modelo"] = template_id
+            if canal_id and not usa_canal:
+                cfg["channels"] = [c for c in (cfg.get("channels") or [])
+                                   if str(c.get("id")) != canal_id]
+                removido["canal"] = canal_id
+
             gerenciador = ConfigurationManager(self.config_path, self.dir_dados / "config_versions")
             gerenciador.load()
             gerenciador.apply(cfg, origin="console")
         except Exception as exc:
             return {"ok": False, "erro": str(exc)}
-        return {"ok": True, "servico": self.reiniciar_servico()}
+        return {"ok": True, "removido": removido, "servico": self.reiniciar_servico()}
+
+    def reparar(self) -> dict:
+        """Tira referências órfãs de uma configuração já quebrada.
+
+        Existe por causa das remoções feitas pela versão anterior: o PC que já
+        passou por ela tem comando ou sequência apontando para device que não
+        existe, e nenhuma gravação passa mais. Sem isto, a saída seria editar
+        JSON à mão numa usina.
+        """
+        from .config import ConfigurationManager
+        try:
+            cfg = self._config()
+            ids_dev = {str(d.get("id")) for d in (cfg.get("devices") or [])}
+            ids_tpl = {str(t.get("id")) for t in (cfg.get("templates") or [])}
+            ids_can = {str(c.get("id")) for c in (cfg.get("channels") or [])}
+            achados: dict[str, int] = {}
+
+            for secao in ("topics", "commands", "sequences"):
+                antes = cfg.get(secao) or []
+                depois = [x for x in antes if str(x.get("device_id")) in ids_dev]
+                if len(depois) != len(antes):
+                    achados[secao] = len(antes) - len(depois)
+                cfg[secao] = depois
+
+            for secao in ("requests", "fields"):
+                antes = cfg.get(secao) or []
+                depois = [x for x in antes if str(x.get("template_id")) in ids_tpl]
+                if len(depois) != len(antes):
+                    achados[secao] = len(antes) - len(depois)
+                cfg[secao] = depois
+
+            # Device apontando para canal ou template que sumiu não tem conserto
+            # automático: some o equipamento junto, e isso é decisão de quem opera.
+            quebrados = [str(d.get("id")) for d in (cfg.get("devices") or [])
+                         if str(d.get("channel_id")) not in ids_can
+                         or str(d.get("template_id")) not in ids_tpl]
+
+            if not achados and not quebrados:
+                return {"ok": True, "achados": {}, "mensagem": "nada a reparar"}
+            if quebrados:
+                return {"ok": False, "erro": "equipamento sem canal ou sem modelo: "
+                                             + ", ".join(quebrados) + ". Remova pelo botão Remover."}
+
+            # Sem load(): ele valida o arquivo atual, que é justamente o que
+            # está quebrado, e estouraria antes de conseguir gravar o corrigido.
+            # A revisão vem do próprio arquivo, já que não há estado carregado.
+            gerenciador = ConfigurationManager(self.config_path, self.dir_dados / "config_versions")
+            cfg["revision"] = int(cfg.get("revision", 0) or 0) + 1
+            gerenciador.apply(cfg, origin="console:reparo")
+        except Exception as exc:
+            return {"ok": False, "erro": str(exc)}
+        return {"ok": True, "achados": achados, "servico": self.reiniciar_servico()}
 
     def aquisicao(self, ligar: bool) -> dict:
         from .config import ConfigurationManager

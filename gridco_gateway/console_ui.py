@@ -345,6 +345,10 @@ class Console(tk.Tk):
         self.b_aq = ttk.Button(acoes, text="—", command=self._alternar_aquisicao)
         self.b_aq.pack(side="left")
         ttk.Button(acoes, text="Remover selecionado", command=self._remover).pack(side="left", padx=6)
+        # Para o PC que já passou pela remoção incompleta da versão anterior e
+        # ficou com a configuração recusada. Sem isto, a saída era editar JSON
+        # à mão numa usina.
+        ttk.Button(acoes, text="Reparar configuração", command=self._reparar).pack(side="left")
         self.tv_cad = self._tabela(baixo, ("id", "tipo", "canal", "unit", "índice"),
                                    (220, 140, 170, 70, 70), elastica=2,
                                    altura=6, expandir=False)
@@ -443,6 +447,28 @@ class Console(tk.Tk):
         r = self.ponte.remover(did)
         if not r.get("ok"):
             messagebox.showerror("Remover", str(r.get("erro")))
+        else:
+            # Diz o que saiu junto: canal e modelo somem quando ficam sem dono,
+            # e descobrir isso pela lista vazia seria pior.
+            itens = r.get("removido") or {}
+            detalhe = ", ".join(f"{v} {k}" for k, v in itens.items() if isinstance(v, int) and v)
+            extra = [f"{k}: {v}" for k, v in itens.items() if isinstance(v, str)]
+            partes = [p for p in (detalhe, "; ".join(extra)) if p]
+            self.lb_res.config(text=f"'{did}' removido.\n\n" + ("\n".join(partes) or "nada mais saiu"),
+                               bg=SURF2, fg=INK)
+        self._atualizar_cadastro()
+
+    def _reparar(self) -> None:
+        r = self.ponte.reparar()
+        if not r.get("ok"):
+            messagebox.showerror("Reparar", str(r.get("erro")))
+            return
+        achados = r.get("achados") or {}
+        if not achados:
+            messagebox.showinfo("Reparar", "Nada a reparar: a configuração está íntegra.")
+            return
+        resumo = "\n".join(f"  {v} em {k}" for k, v in achados.items())
+        messagebox.showinfo("Reparar", "Referências órfãs removidas:\n\n" + resumo)
         self._atualizar_cadastro()
 
     def _alternar_aquisicao(self) -> None:
