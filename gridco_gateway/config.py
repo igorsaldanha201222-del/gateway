@@ -295,6 +295,11 @@ def validate_configuration(raw: Any) -> list[ValidationMessage]:
     word_widths = {"uint16": 1, "int16": 1, "bool": 1, "bool_bit": 1, "bool_nonzero": 1,
                    "uint32": 2, "int32": 2, "float32": 2, "bcd64": 4,
                    "uint64": 4, "int64": 4, "float64": 4}
+    # A mesma decisao que o decoder toma na hora de ler. Tem de ser a mesma
+    # funcao: duas copias da regra divergiriam, e a divergencia apareceria como
+    # configuracao aceita que le o registrador errado.
+    from .decoder import requests_cumulativas
+    cumulativas = requests_cumulativas(rows["fields"], requests_by_id)
     for index, field in enumerate(rows["fields"]):
         path = f"fields[{index}]"
         template_id = str(field.get("template_id", ""))
@@ -314,12 +319,14 @@ def validate_configuration(raw: Any) -> list[ValidationMessage]:
             elif str(request.get("template_id")) != template_id:
                 messages.append(ValidationMessage("error", f"{path}.request_id", "request pertence a outro template", "reference.request_template"))
             else:
-                raw_offset = int(field.get("register_offset", 0) or 0)
-                buffer_offset = int(request.get("buffer_offset", 0) or 0)
                 # O contrato CODESYS V2 tambem aceita offsets no buffer global.
-                # No Python cada request tem seu proprio buffer, portanto convertemos
-                # para a posicao relativa sem exigir migracao dos JSONs existentes.
-                offset = raw_offset - buffer_offset if buffer_offset and raw_offset >= buffer_offset else raw_offset
+                # No Python cada request tem seu proprio buffer, portanto
+                # convertemos para a posicao relativa sem exigir migracao dos
+                # JSONs existentes. A decisao e por request, nao por campo:
+                # ver requests_cumulativas() no decoder.
+                from .decoder import offset_na_resposta
+                offset = offset_na_resposta(
+                    int(field.get("register_offset", 0) or 0), request, cumulativas)
                 width = int(field.get("word_count", word_widths.get(data_type, 1)) or 1)
                 if offset < 0 or offset + width > int(request.get("quantity", 0) or 0):
                     messages.append(ValidationMessage("error", f"{path}.register_offset", "campo ultrapassa a resposta da request", "field.bounds"))

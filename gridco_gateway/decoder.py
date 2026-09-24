@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import struct
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any, Collection, Iterable, Mapping
 from zoneinfo import ZoneInfo
 
 from .storage import Storage
@@ -202,6 +202,60 @@ def _calculate(operation: int, a: float, b: float | None) -> float:
     raise DecodeError(f"operacao calculada nao suportada: {operation}")
 
 
+def requests_cumulativas(
+    fields: Iterable[Mapping[str, Any]],
+    requests: Mapping[str, Mapping[str, Any]],
+) -> set[str]:
+    """Decide, por request, se ``register_offset`` é relativo ou cumulativo.
+
+    Dois contratos convivem nos JSONs. No do CODESYS V2 o offset é índice num
+    buffer único e traz o ``buffer_offset`` embutido; no do Python cada request
+    tem o próprio buffer e o offset começa em zero.
+
+    A regra é: **relativo, salvo quando for impossível**. Um offset relativo tem
+    de caber na janela lida (``0 <= offset < quantity``); se algum campo estoura
+    isso, a única leitura coerente que resta é a cumulativa, e aí todos têm de
+    cair em ``[buffer_offset, buffer_offset + quantity)``.
+
+    Decidir campo a campo por ``offset >= buffer_offset``, como se fazia antes,
+    lia o registrador errado em 259 campos do catálogo — entre eles as tensões
+    de string 7 em diante dos Huawei, que devolviam a tensão da string 1. Valor
+    plausível, não erro: só apareceria comparando com o display do inversor.
+
+    O ABB M1M mostra por que a regra precisa ser conservadora: ``buffer_offset``
+    8, offsets 8..64, ``quantity`` 65. Cabe nas duas leituras, e a antiga
+    escolhia a cumulativa. Sob a relativa a request termina exatamente no último
+    campo, o que não seria coincidência.
+    """
+    por_request: dict[str, list[int]] = {}
+    for field in fields:
+        if str(field.get("source_type", "modbus")).lower() != "modbus":
+            continue
+        por_request.setdefault(str(field.get("request_id", "")), []).append(
+            int(field.get("register_offset", 0) or 0))
+
+    cumulativas: set[str] = set()
+    for request_id, offsets in por_request.items():
+        request = requests.get(request_id) or {}
+        buffer_offset = int(request.get("buffer_offset", 0) or 0)
+        quantity = int(request.get("quantity", 0) or 0)
+        if not buffer_offset or not offsets:
+            continue
+        if all(0 <= item < quantity for item in offsets):
+            continue
+        if all(buffer_offset <= item < buffer_offset + quantity for item in offsets):
+            cumulativas.add(request_id)
+    return cumulativas
+
+
+def offset_na_resposta(
+    raw_offset: int, request: Mapping[str, Any], cumulativas: Collection[str]
+) -> int:
+    if str(request.get("id", "")) in cumulativas:
+        return raw_offset - int(request.get("buffer_offset", 0) or 0)
+    return raw_offset
+
+
 def build_payload(
     config: Mapping[str, Any],
     device: Mapping[str, Any],
@@ -225,6 +279,7 @@ def build_payload(
         str(item.get("id", "")): item for item in config.get("requests", [])
         if isinstance(item, Mapping)
     }
+    cumulativas = requests_cumulativas(fields, requests)
     try:
         timezone = ZoneInfo(str((config.get("plant") or {}).get("timezone", "America/Sao_Paulo")))
     except Exception:
@@ -256,8 +311,7 @@ def build_payload(
                 words = raw_by_request[request_id]
                 raw_offset = int(field.get("register_offset", 0) or 0)
                 request = requests.get(request_id, {})
-                buffer_offset = int(request.get("buffer_offset", 0) or 0)
-                offset = raw_offset - buffer_offset if buffer_offset and raw_offset >= buffer_offset else raw_offset
+                offset = offset_na_resposta(raw_offset, request, cumulativas)
                 value = decode_words(words[offset:], field)
             else:
                 continue

@@ -34,10 +34,71 @@ class DecoderTests(unittest.TestCase):
         swapped = dict(field, word_order="swapped")
         self.assertAlmostEqual(123456.789, decode_words(list(reversed(words)), swapped), places=6)
 
+    def test_offset_relativo_nao_e_confundido_com_buffer_global(self) -> None:
+        """O caso Huawei: register_offset relativo que colide com buffer_offset.
+
+        A request le 32016..32055 (buffer_offset 12, quantity 40). A tensao da
+        string 7 esta em register_offset 12 - igual ao buffer_offset. Decidir
+        campo a campo por 'offset >= buffer_offset' subtraia 12 e devolvia a
+        leitura da string 1: valor plausivel, nao erro.
+        """
+        config = {
+            "plant": {"timezone": "UTC"},
+            "requests": [{"id": "req", "address": 32016, "buffer_offset": 12, "quantity": 40}],
+            "fields": [
+                {"id": f"s{n}", "template_id": "tpl", "request_id": "req",
+                 "json_key": f"string_voltage_{n:02d}", "source_type": "modbus",
+                 "data_type": "uint16", "register_offset": (n - 1) * 2, "gain": 1,
+                 "offset": 0, "enabled": True, "metadata": {"publish": True, "decimals": 0}}
+                for n in (1, 7)
+            ],
+        }
+        device = {"id": "inv", "template_id": "tpl"}
+        palavras = list(range(100, 140))          # posicao i vale 100 + i
+        with tempfile.TemporaryDirectory() as temporary:
+            storage = Storage(Path(temporary) / "db.sqlite", {"max_buffer_messages": 100})
+            try:
+                payload, _ = build_payload(config, device, {"req": palavras}, 192,
+                                           datetime(2026, 8, 7, tzinfo=UTC), {}, storage)
+                self.assertEqual(100, payload["string_voltage_01"])   # posicao 0
+                self.assertEqual(112, payload["string_voltage_07"])   # posicao 12, nao 0
+            finally:
+                storage.close()
+
+    def test_offset_cumulativo_continua_funcionando(self) -> None:
+        """O caso STI Norland: offset que so faz sentido como buffer global.
+
+        buffer_offset 70, quantity 7: o offset 72 nao cabe em 0..6, entao a
+        unica leitura coerente e a posicao 2 dentro do bloco.
+        """
+        config = {
+            "plant": {"timezone": "UTC"},
+            "requests": [{"id": "req", "address": 500, "buffer_offset": 70, "quantity": 7}],
+            "fields": [
+                {"id": "x", "template_id": "tpl", "request_id": "req", "json_key": "x",
+                 "source_type": "modbus", "data_type": "uint16", "register_offset": 72,
+                 "gain": 1, "offset": 0, "enabled": True,
+                 "metadata": {"publish": True, "decimals": 0}},
+            ],
+        }
+        device = {"id": "ncu", "template_id": "tpl"}
+        with tempfile.TemporaryDirectory() as temporary:
+            storage = Storage(Path(temporary) / "db.sqlite", {"max_buffer_messages": 100})
+            try:
+                payload, _ = build_payload(config, device, {"req": [10, 11, 12, 13, 14, 15, 16]},
+                                           192, datetime(2026, 8, 7, tzinfo=UTC), {}, storage)
+                self.assertEqual(12, payload["x"])
+            finally:
+                storage.close()
+
     def test_payload_derived_linked_and_daily_energy(self) -> None:
         config = {
             "plant": {"timezone": "UTC"},
-            "requests": [{"id": "req", "buffer_offset": 10}],
+            # quantity e obrigatoria na configuracao real (a validacao exige
+            # 1..limit) e e' o que permite decidir se register_offset e relativo
+            # a request ou indice de buffer global. Aqui 10 nao cabe em 0..0,
+            # entao e' cumulativo e vira posicao 0.
+            "requests": [{"id": "req", "buffer_offset": 10, "quantity": 1}],
             "fields": [
                 {"id": "a", "template_id": "tpl", "request_id": "req", "json_key": "total",
                  "source_type": "modbus", "data_type": "uint16", "register_offset": 10, "gain": 1,
