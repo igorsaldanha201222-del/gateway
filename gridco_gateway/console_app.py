@@ -575,6 +575,8 @@ class Ponte:
         try:
             cfg = self._config()
             planta = cfg.setdefault("plant", {})
+            antigo = str((planta.get("metadata") or {}).get("topic_slug")
+                         or planta.get("id") or "")
             planta["id"] = slug
             planta["name"] = nome
             planta.setdefault("metadata", {})["topic_slug"] = slug
@@ -589,12 +591,28 @@ class Ponte:
             geral["v3_status_topic"] = f"dev/read/UFV/{slug}/gateway/status"
             cfg.setdefault("mqtt", {})["client_id"] = f"GRIDCO-{slug.upper()}"
 
+            # Os tópicos de cada equipamento já estão gravados com o slug
+            # antigo. Sem renomeá-los, o status passa a sair no nome novo e a
+            # telemetria continua no velho — do lado do servidor a usina
+            # simplesmente some, sem erro em lugar nenhum.
+            renomeados = 0
+            if antigo and antigo != slug:
+                alvo = f"/UFV/{antigo}/"
+                novo = f"/UFV/{slug}/"
+                for secao in ("topics", "commands"):
+                    for item in cfg.get(secao) or []:
+                        valor = str(item.get("topic", ""))
+                        if alvo in valor:
+                            item["topic"] = valor.replace(alvo, novo)
+                            renomeados += 1
+
             gerenciador = ConfigurationManager(self.config_path, self.dir_dados / "config_versions")
             gerenciador.load()
             gerenciador.apply(cfg, origin="console")
         except Exception as exc:
             return {"ok": False, "erro": str(exc)}
-        return {"ok": True, "slug": slug, "servico": self.reiniciar_servico()}
+        return {"ok": True, "slug": slug, "topicos_renomeados": renomeados,
+                "servico": self.reiniciar_servico()}
 
     # ---------- credencial do broker (mTLS) ----------
     # O certificado da usina é a credencial: o CN dele vira o usuário no broker.

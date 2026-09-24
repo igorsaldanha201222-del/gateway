@@ -636,7 +636,9 @@ class Console(tk.Tk):
         self.e_usina_slug.delete(0, "end")
         self.e_usina_slug.insert(0, r["slug"])
         self._previa_topico()
-        self.lb_usina_msg.config(text=f"salvo · serviço {r.get('servico')}", fg=INK2)
+        n = int(r.get("topicos_renomeados") or 0)
+        aviso = f" · {n} tópico(s) renomeado(s)" if n else ""
+        self.lb_usina_msg.config(text=f"salvo{aviso} · serviço {r.get('servico')}", fg=INK2)
         self._ciclo_agora()
 
     # ---------------- broker: certificado da usina ----------------
