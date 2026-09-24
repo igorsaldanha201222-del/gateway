@@ -559,6 +559,26 @@ class Ponte:
         s = re.sub(r"[^a-z0-9]+", "_", sem_acento.lower()).strip("_")
         return re.sub(r"_+", "_", s)
 
+    @staticmethod
+    def _renomear_topicos(cfg: dict, slug: str) -> int:
+        """Põe todo tópico no slug atual, venha ele de onde vier.
+
+        Casa ``.../UFV/<qualquer>/...`` e troca o segmento pelo slug da usina.
+        Olhar o que está gravado, em vez do que mudou nesta gravação, é o que
+        permite consertar um PC que já ficou inconsistente.
+        """
+        import re
+        padrao = re.compile(r"(/UFV/)([^/]+)(/)")
+        trocados = 0
+        for secao in ("topics", "commands"):
+            for item in cfg.get(secao) or []:
+                valor = str(item.get("topic", ""))
+                novo = padrao.sub(lambda m: m.group(1) + slug + m.group(3), valor, count=1)
+                if novo != valor:
+                    item["topic"] = novo
+                    trocados += 1
+        return trocados
+
     def definir_usina(self, nome: str, slug: str) -> dict:
         from .config import ConfigurationManager
         import re
@@ -595,16 +615,14 @@ class Ponte:
             # antigo. Sem renomeá-los, o status passa a sair no nome novo e a
             # telemetria continua no velho — do lado do servidor a usina
             # simplesmente some, sem erro em lugar nenhum.
-            renomeados = 0
-            if antigo and antigo != slug:
-                alvo = f"/UFV/{antigo}/"
-                novo = f"/UFV/{slug}/"
-                for secao in ("topics", "commands"):
-                    for item in cfg.get(secao) or []:
-                        valor = str(item.get("topic", ""))
-                        if alvo in valor:
-                            item["topic"] = valor.replace(alvo, novo)
-                            renomeados += 1
+            #
+            # A varredura olha o que ESTÁ gravado, não o que mudou nesta
+            # chamada. Um PC que já renomeou numa versão sem esta correção tem
+            # topic_slug novo e tópicos velhos; comparar com o slug anterior
+            # não acharia nada, e salvar o mesmo nome de novo — que é o
+            # primeiro reflexo de quem está tentando consertar — não faria
+            # efeito.
+            renomeados = self._renomear_topicos(cfg, slug)
 
             gerenciador = ConfigurationManager(self.config_path, self.dir_dados / "config_versions")
             gerenciador.load()

@@ -100,6 +100,21 @@ class ConsoleAppTests(unittest.TestCase):
         self.assertEqual("dev/write/UFV/usina_nova/+/+",
                          cfg["general"]["command_subscribe_filter"])
 
+    def test_salvar_o_mesmo_nome_conserta_topico_que_ficou_para_tras(self) -> None:
+        """O estado em que um PC fica depois de renomear numa versao sem o
+        conserto: topic_slug novo, topicos velhos. Salvar o mesmo nome e o
+        primeiro reflexo de quem tenta arrumar, e precisa funcionar."""
+        cfg = self._lido()
+        cfg["plant"]["metadata"]["topic_slug"] = "usina_nova"
+        cfg["plant"]["id"] = "usina_nova"
+        self.conf.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+        r = self.ponte.definir_usina("UFV Nova", "usina_nova")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(2, r["topicos_renomeados"])
+        for topico in self._lido()["topics"]:
+            self.assertIn("/UFV/usina_nova/", topico["topic"])
+
     def test_renomear_mantem_o_que_o_engine_publica_coerente(self) -> None:
         from gridco_gateway.engine import GatewayEngine
         self.ponte.definir_usina("UFV Nova", "usina_nova")
