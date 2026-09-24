@@ -120,9 +120,45 @@ if (Test-Path $exeConsole) {
     Write-Host "  O servico funciona, mas nao havera console nem atualizacao dele."
 }
 
-# --- 4. configuracao: nunca sobrescreve a do PC ---------------------------
+# --- 4. configuracao ------------------------------------------------------
+# Equipamentos, templates e canais sao da usina e nunca se toca neles. Mas o
+# bloco "mqtt" nao e da usina, e sim da infraestrutura: endereco do broker,
+# porta e TLS. Preservar TUDO deixava PC antigo preso em 127.0.0.1:1883 ou com
+# ca_file vazio, e a falha aparecia so como "erro de certificado" em campo,
+# sem ninguem entender por que o arquivo novo do pacote nao valia.
 if (Test-Path $alvoConf) {
-    Write-Host "Configuracao ja existe e foi mantida: $alvoConf"
+    Write-Host "Configuracao da usina mantida: $alvoConf"
+    try {
+        $atual = Get-Content $alvoConf -Raw | ConvertFrom-Json
+        $pacote = Get-Content $Config   -Raw | ConvertFrom-Json
+        $mudou = @()
+
+        foreach ($campo in @("host", "port")) {
+            if ($atual.mqtt.$campo -ne $pacote.mqtt.$campo) {
+                $mudou += "mqtt.$campo : $($atual.mqtt.$campo) -> $($pacote.mqtt.$campo)"
+                $atual.mqtt.$campo = $pacote.mqtt.$campo
+            }
+        }
+        # client_id fica de fora: e a identidade deste PC no broker.
+        foreach ($campo in @("enabled", "ca_file", "server_hostname")) {
+            if ($atual.mqtt.tls.$campo -ne $pacote.mqtt.tls.$campo) {
+                $de = if ("$($atual.mqtt.tls.$campo)" -eq "") { "(vazio)" } else { $atual.mqtt.tls.$campo }
+                $mudou += "mqtt.tls.$campo : $de -> $($pacote.mqtt.tls.$campo)"
+                $atual.mqtt.tls.$campo = $pacote.mqtt.tls.$campo
+            }
+        }
+
+        if ($mudou) {
+            $atual | ConvertTo-Json -Depth 40 | Out-File -FilePath $alvoConf -Encoding utf8
+            Write-Host "  Ligacao com o broker atualizada pelo pacote:"
+            foreach ($m in $mudou) { Write-Host "    $m" }
+        } else {
+            Write-Host "  Ligacao com o broker ja estava igual a do pacote."
+        }
+    } catch {
+        Write-Host "  AVISO: nao consegui reconciliar o bloco mqtt ($($_.Exception.Message))."
+        Write-Host "  Confira host, porta e ca_file no console antes de sair de campo."
+    }
 } else {
     Copy-Item $Config $alvoConf
     Write-Host "Configuracao base instalada: $alvoConf"
